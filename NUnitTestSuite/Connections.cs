@@ -15,15 +15,13 @@ namespace NUnitTestSuite
     {
         public NetServer StartServer()
         {
-            var config = new NetPeerConfiguration("test-suite")
+            var config = new NetPeerConfiguration("tests")
             {
-                EnableUPnP = true,
                 Port = 27015,
-                MaximumConnections = 10
+                MaximumConnections = 10,
+                EnableUPnP = true
             };
-
-            // enable nat 
-            config.EnableMessageType(NetIncomingMessageType.NatIntroductionSuccess);
+            
 
             NetServer server = new NetServer(config);
             server.Start();
@@ -48,15 +46,13 @@ namespace NUnitTestSuite
 
         public NetClient StartClient()
         {
-            var config = new NetPeerConfiguration("test-suite")
-            {
-                EnableUPnP = true,
-                Port = 27015
-            };
+            // console app sync context
+            SynchronizationContext.SetSynchronizationContext( new SynchronizationContext());
 
-            config.EnableMessageType(NetIncomingMessageType.NatIntroductionSuccess);
-
+            var config = new NetPeerConfiguration("tests");
+            
             var client = new NetClient(config);
+            client.RegisterReceivedCallback(new SendOrPostCallback(HandleMessageClientCallback));
             client.Start();
 
             return client;
@@ -75,49 +71,22 @@ namespace NUnitTestSuite
             StopClient(client);
         }
 
-        public bool ConnectionStatusHandler( NetIncomingMessage message )
+        public bool ConnectionStatusHandler( string context, NetIncomingMessage message )
         {
-            string data = message.ReadString();
-            TestContext.Out.WriteLine("ConnectionHandler: " + data);
             switch (message.MessageType)
             {
                 case NetIncomingMessageType.StatusChanged:
                     NetConnectionStatus status = (NetConnectionStatus) message.ReadByte();
-                    TestContext.Out.WriteLine("Connection status changed: " + status);
+                    TestContext.Out.WriteLine("[" + context + "] Connection status changed: " + status);
                     if (status == NetConnectionStatus.Disconnected)
                     {
                         return true;
                     }
                 
                     break;
-                case NetIncomingMessageType.Error:
-                    break;
-                case NetIncomingMessageType.UnconnectedData:
-                    break;
-                case NetIncomingMessageType.ConnectionApproval:
-                    break;
-                case NetIncomingMessageType.Data:
-                    break;
-                case NetIncomingMessageType.Receipt:
-                    break;
-                case NetIncomingMessageType.DiscoveryRequest:
-                    break;
-                case NetIncomingMessageType.DiscoveryResponse:
-                    break;
-                case NetIncomingMessageType.VerboseDebugMessage:
-                    break;
-                case NetIncomingMessageType.DebugMessage:
-                    break;
-                case NetIncomingMessageType.WarningMessage:
-                    break;
-                case NetIncomingMessageType.ErrorMessage:
-                    break;
-                case NetIncomingMessageType.NatIntroductionSuccess:
-                    break;
-                case NetIncomingMessageType.ConnectionLatencyUpdated:
-                    break;
                 default:
-                    throw new InvalidEnumArgumentException();
+                    TestContext.Out.WriteLine("[" + context + "] ConnectionHandler: " + message.ReadString());
+                    break;
             }
 
             return false;
@@ -136,7 +105,7 @@ namespace NUnitTestSuite
 
                     while ((message = server.ReadMessage()) != null)
                     {
-                        var status = ConnectionStatusHandler(message);
+                        var status = ConnectionStatusHandler("server", message);
                         if (status)
                         {
                             TestContext.Out.WriteLine("Client has disconnected from the server");
@@ -162,55 +131,53 @@ namespace NUnitTestSuite
             }
         }
 
+        private NetClient client = null;
+        private bool _clientShutdown = false;
+        private bool _calledDisconnect = false;
+        public void HandleMessageClientCallback(object peer)
+        {
+            TestContext.Out.WriteLine("Client: HandleMessageClientCallback");
+            NetIncomingMessage message;
+
+            while ((message = client.ReadMessage()) != null)
+            {
+                var status = ConnectionStatusHandler("client", message);
+                if (status)
+                {
+                    TestContext.Out.WriteLine("Recieved disconnection flag");
+                    _clientShutdown = true;
+                    break;
+                }
+
+                // disconnect client ONLY when the client has connected
+                if (client.ConnectionStatus == NetConnectionStatus.Connected && !_calledDisconnect)
+                {
+                    TestContext.Out.WriteLine("Informing client socket to disconnect and waiting for proper disconnect flag");
+                    client.Disconnect("k thx bye");
+                    _calledDisconnect = true;
+                }
+
+                client.Recycle(message);
+            }
+            
+        }
+
         public void ClientThread()
         {
-            var client = StartClient();
+            client = StartClient();
             client.Connect("127.0.0.1", 27015);
 
-            var running = true;
-            var calledDisconnect = false;
-            try
+            
+            while (!_clientShutdown)
             {
-                // enter context for handling messages
-                while (running)
-                {
-                    NetIncomingMessage message;
 
-                    while ((message = client.ReadMessage()) != null)
-                    {
-                        var status = ConnectionStatusHandler(message);
-                        if (status)
-                        {
-                            TestContext.Out.WriteLine("Recieved disconnection flag");
-                            running = false;
-                            break;
-                        }
-
-                        // disconnect client ONLY when the client has connected
-                        if (client.ConnectionStatus == NetConnectionStatus.Connected && !calledDisconnect )
-                        {
-                            TestContext.Out.WriteLine("Informing client socket to disconnect and waiting for proper disconnect flag");
-                            client.Disconnect("k thx bye");
-                            calledDisconnect = true;
-                        }
-
-                        client.Recycle(message);
-                    }
-
-                }
+                // Do nothing / wait
             }
-            catch (Exception e)
-            {
-                TestContext.Out.WriteLine(e.ToString());
-                throw;
-            }
-            finally
-            {
-                TestContext.Out.WriteLine("Stopping client");
-                Assert.IsFalse(running, "Client still running, when it should have closed");
 
-                StopClient(client);
-            }
+            TestContext.Out.WriteLine("Stopping client");
+
+            StopClient(client);
+            
         }
         
         [Test, MaxTime(5000)]
