@@ -39,10 +39,10 @@ namespace NUnitTestSuite
             StopServer(server);
 
             Assert.AreEqual(NetPeerStatus.ShutdownRequested, server.Status);
-            Assert.That(() => server.Status, Is.EqualTo(NetPeerStatus.NotRunning).After(2).Seconds.PollEvery(100));
+            Assert.That(() => server.Status, Is.EqualTo(NetPeerStatus.NotRunning).After(4).Seconds.PollEvery(100));
         }
 
-        [Test]
+        [Test, Repeat(100)]
         public void NetworkClientInitTest()
         {
             var config = new NetPeerConfiguration("test-suite")

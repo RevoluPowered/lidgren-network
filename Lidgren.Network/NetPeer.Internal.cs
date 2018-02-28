@@ -106,7 +106,7 @@ namespace Lidgren.Network
 			}
 		}
 
-		private void BindSocket(bool reBind)
+		private void BindSocket()
 		{
 			double now = NetTime.Now;
 			if (now - m_lastSocketBind < 1.0)
@@ -118,15 +118,14 @@ namespace Lidgren.Network
 
 			if (m_socket == null)
 				m_socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
-
-			if (reBind)
-				m_socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, (int)1);
+            
+		    m_socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, (int)1);
 
 			m_socket.ReceiveBufferSize = m_configuration.ReceiveBufferSize;
 			m_socket.SendBufferSize = m_configuration.SendBufferSize;
 			m_socket.Blocking = false;
 
-			var ep = (EndPoint)new NetEndPoint(m_configuration.LocalAddress, reBind ? m_listenPort : m_configuration.Port);
+			var ep = (EndPoint)new NetEndPoint(m_configuration.LocalAddress, m_listenPort);
 			m_socket.Bind(ep);
 
 			// try catch only works on linux not osx
@@ -176,7 +175,7 @@ namespace Lidgren.Network
 				m_handshakes.Clear();
 
 				// bind to socket
-				BindSocket(false);
+				BindSocket();
 
 				m_receiveBuffer = new byte[m_configuration.ReceiveBufferSize];
 				m_sendBuffer = new byte[m_configuration.SendBufferSize];
@@ -262,27 +261,20 @@ namespace Lidgren.Network
 				{
 					if (m_socket != null)
 					{
-						try
-						{
-							m_socket.Shutdown(SocketShutdown.Receive);
-						}
-						catch(Exception ex)
-						{
-							LogDebug("Socket.Shutdown exception: " + ex.ToString());
-						}
-
-						try
-						{
-							m_socket.Close(2); // 2 seconds timeout
-						}
-						catch (Exception ex)
-						{
-							LogDebug("Socket.Close exception: " + ex.ToString());
-						}
+                        // don't allow socket to linger for data
+                        m_socket.LingerState = new LingerOption(false, 2);
+                        // shutdown socket send and recieve handlers.
+						m_socket.Shutdown(SocketShutdown.Both);
+                        // close connection
+						m_socket.Close(2);
 					}
 				}
-				finally
+				catch (Exception ex)
 				{
+				    LogDebug("socket shutdown method exception: " + ex.ToString());
+				}
+                finally
+                { 
 					m_socket = null;
 					m_status = NetPeerStatus.NotRunning;
 					LogDebug("Shutdown complete");
@@ -431,7 +423,7 @@ namespace Lidgren.Network
 
 						case SocketError.NotConnected:
 							// socket is unbound; try to rebind it (happens on mobile when process goes to sleep)
-							BindSocket(true);
+							BindSocket();
 							return;
 
 						default:
