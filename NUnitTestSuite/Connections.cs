@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Net;
 using System.Threading;
 using NUnit.Framework;
 using Lidgren.Network;
@@ -167,7 +168,7 @@ namespace NUnitTestSuite
             serverThread.Start();
 
             var client = StartClient();
-            client.Connect("127.0.0.1", 27015);
+            client.Connect(new IPEndPoint(IPAddress.Loopback, 27015));
 
 
 

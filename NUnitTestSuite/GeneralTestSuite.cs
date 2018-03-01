@@ -13,7 +13,7 @@ namespace NUnitTestSuite
     [TestFixture]
     class GeneralTestSuite
     {
-        [Test, MaxTime(20000)]
+        [Test, MaxTime(20000), Repeat(5)]
         public void GenericTestSuite()
         {
             NetPeerConfiguration config = new NetPeerConfiguration("oldUnitTests");
@@ -67,6 +67,7 @@ namespace NUnitTestSuite
             }
 
             TestContext.Out.WriteLine("Completed Generic Test Suite");
+            TestContext.Out.WriteLine("----------------------------");
         }
     }
 }

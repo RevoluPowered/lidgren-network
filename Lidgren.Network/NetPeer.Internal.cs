@@ -258,7 +258,7 @@ namespace Lidgren.Network
 			// one final heartbeat, will send stuff and do disconnect
 			Heartbeat();
 
-			NetUtility.Sleep(50);
+			NetUtility.Sleep(10);
 
 			lock (m_initializeLock)
 			{
@@ -266,11 +266,10 @@ namespace Lidgren.Network
 				{
 					if (m_socket != null)
 					{
-                        // don't allow socket to linger for data
-                        //m_socket.LingerState = new LingerOption(false, 2);
-                        // shutdown socket send and recieve handlers.
-						m_socket.Shutdown(SocketShutdown.Both);
-                        // close connection
+						// shutdown socket send and recieve handlers.
+						//m_socket.Shutdown(SocketShutdown.Both);
+						
+						// close connection, if present
 						m_socket.Close(2);
 					}
 				}
