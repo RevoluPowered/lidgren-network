@@ -27,7 +27,7 @@ namespace NUnitTestSuite
             server.Shutdown("closing server");
         }
 
-        [Test, Repeat(1)]
+        [Test, Repeat(5)]
         public void NetworkServerInitTest()
         {
             var server = StartServer();
@@ -56,7 +56,7 @@ namespace NUnitTestSuite
             client.Shutdown("closing client connection");
         }
 
-        [Test, Repeat(1)]
+        [Test, Repeat(5)]
         public void NetworkClientInitTest()
         {
             var client = StartClient();

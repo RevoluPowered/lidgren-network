@@ -13,7 +13,7 @@ namespace NUnitTestSuite
     [TestFixture]
     class GeneralTestSuite
     {
-        [Test]
+        [Test, MaxTime(20000)]
         public void GenericTestSuite()
         {
             NetPeerConfiguration config = new NetPeerConfiguration("oldUnitTests");
