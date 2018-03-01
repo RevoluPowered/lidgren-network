@@ -131,7 +131,7 @@ namespace Lidgren.Network
 		/// </summary>
 		public void Start()
 		{
-			if (m_status != NetPeerStatus.NotRunning)
+			if (m_status != NetPeerStatus.NotRunning || m_status == NetPeerStatus.Starting)
 			{
 				// already running! Just ignore...
 				LogWarning("Start() called on already running NetPeer - ignoring.");

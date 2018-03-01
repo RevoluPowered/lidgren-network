@@ -127,7 +127,7 @@ namespace Lidgren.Network
 
 		public static void Sleep(int milliseconds)
 		{
-			//System.Threading.Thread.Sleep(milliseconds);
+			System.Threading.Thread.Sleep(milliseconds);
 		}
 
 		public static IPAddress CreateAddressFromBytes(byte[] bytes)

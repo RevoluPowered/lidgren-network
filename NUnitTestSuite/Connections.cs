@@ -1,12 +1,7 @@
-﻿
-using System;
-using System.ComponentModel;
-using System.Net;
+﻿using System;
 using System.Threading;
 using NUnit.Framework;
-using Lidgren;
 using Lidgren.Network;
-using NUnit.Framework.Constraints;
 
 namespace NUnitTestSuite
 {
@@ -20,9 +15,8 @@ namespace NUnitTestSuite
                 Port = 27015,
                 MaximumConnections = 10
             };
-            
 
-            NetServer server = new NetServer(config);
+            var server = new NetServer(config);
             server.Start();
 
             return server;
@@ -127,17 +121,20 @@ namespace NUnitTestSuite
             {
                 TestContext.Out.WriteLine("Stopping server");
                 StopServer(server);
+                server.GetNetworkThread().Join();
             }
         }
-
-        private NetClient _client = null;
+        
         private bool _clientShutdown = false;
         private bool _calledDisconnect = false;
+
         public void HandleMessageClientCallback(object peer)
         {
             NetIncomingMessage message;
+            NetClient client = (NetClient) peer;
+            Assert.IsNotNull(client, "NetClient null");
 
-            while ((message = _client.ReadMessage()) != null)
+            while ((message = client.ReadMessage()) != null)
             {
                 var status = ConnectionStatusHandler("client", message);
                 if (status)
@@ -148,14 +145,14 @@ namespace NUnitTestSuite
                 }
 
                 // disconnect client ONLY when the client has connected
-                if (_client.ConnectionStatus == NetConnectionStatus.Connected && !_calledDisconnect)
+                if (client.ConnectionStatus == NetConnectionStatus.Connected && !_calledDisconnect)
                 {
                     TestContext.Out.WriteLine("Informing client socket to disconnect and waiting for proper disconnect flag");
-                    _client.Disconnect("k thx bye");
+                    client.Disconnect("k thx bye");
                     _calledDisconnect = true;
                 }
 
-                _client.Recycle(message);
+                client.Recycle(message);
             }
             
         }
@@ -164,25 +161,33 @@ namespace NUnitTestSuite
         [Test, Repeat(5), MaxTime(20000)]
         public void NetworkConnectDisconnect()
         {
+            TestContext.Out.WriteLine("-----------------------------------------------------------");
             Thread serverThread = new Thread(ServerThread);
 
             serverThread.Start();
 
-            _client = StartClient();
-            _client.Connect("127.0.0.1", 27015);
-            
+            var client = StartClient();
+            client.Connect("127.0.0.1", 27015);
+
+
+
 
             while (!_clientShutdown)
             {
                 // Do nothing / wait
             }
-            
+
+
+            // join for 5 seconds
+            serverThread.Join(5);
+
 
             TestContext.Out.WriteLine("Stopping client");
-            StopClient(_client);
-            
-            // join for 10 seconds
-            serverThread.Join();
+            StopClient(client);
+
+            client.GetNetworkThread().Join();
+
+
         }
     }
 }

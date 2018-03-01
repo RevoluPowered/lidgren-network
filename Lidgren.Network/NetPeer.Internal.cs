@@ -16,6 +16,11 @@ namespace Lidgren.Network
 	{
 		private NetPeerStatus m_status;
 		private Thread m_networkThread;
+
+	    public Thread GetNetworkThread()
+	    {
+	        return m_networkThread;
+	    }
 		private Socket m_socket;
 		internal byte[] m_sendBuffer;
 		internal byte[] m_receiveBuffer;
@@ -253,7 +258,7 @@ namespace Lidgren.Network
 			// one final heartbeat, will send stuff and do disconnect
 			Heartbeat();
 
-			//NetUtility.Sleep(10);
+			NetUtility.Sleep(50);
 
 			lock (m_initializeLock)
 			{
