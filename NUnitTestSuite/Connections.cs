@@ -18,8 +18,7 @@ namespace NUnitTestSuite
             var config = new NetPeerConfiguration("tests")
             {
                 Port = 27015,
-                MaximumConnections = 10,
-                EnableUPnP = true
+                MaximumConnections = 10
             };
             
 
@@ -34,7 +33,7 @@ namespace NUnitTestSuite
             server.Shutdown("closing server");
         }
 
-        [Test, Repeat(20)]
+        [Test, Repeat(1)]
         public void NetworkServerInitTest()
         {
             var server = StartServer();
@@ -63,7 +62,7 @@ namespace NUnitTestSuite
             client.Shutdown("closing client connection");
         }
 
-        [Test, Repeat(20)]
+        [Test, Repeat(1)]
         public void NetworkClientInitTest()
         {
             var client = StartClient();
@@ -85,7 +84,7 @@ namespace NUnitTestSuite
                 
                     break;
                 default:
-                    TestContext.Out.WriteLine("[" + context + "] ConnectionHandler: " + message.ReadString());
+                    TestContext.Out.WriteLine("[" + context + "] data: " + message.ReadString());
                     break;
             }
 
@@ -131,68 +130,59 @@ namespace NUnitTestSuite
             }
         }
 
-        private NetClient client = null;
+        private NetClient _client = null;
         private bool _clientShutdown = false;
         private bool _calledDisconnect = false;
         public void HandleMessageClientCallback(object peer)
         {
-            TestContext.Out.WriteLine("Client: HandleMessageClientCallback");
             NetIncomingMessage message;
 
-            while ((message = client.ReadMessage()) != null)
+            while ((message = _client.ReadMessage()) != null)
             {
                 var status = ConnectionStatusHandler("client", message);
                 if (status)
                 {
-                    TestContext.Out.WriteLine("Recieved disconnection flag");
+                    TestContext.Out.WriteLine("Received disconnection flag");
                     _clientShutdown = true;
                     break;
                 }
 
                 // disconnect client ONLY when the client has connected
-                if (client.ConnectionStatus == NetConnectionStatus.Connected && !_calledDisconnect)
+                if (_client.ConnectionStatus == NetConnectionStatus.Connected && !_calledDisconnect)
                 {
                     TestContext.Out.WriteLine("Informing client socket to disconnect and waiting for proper disconnect flag");
-                    client.Disconnect("k thx bye");
+                    _client.Disconnect("k thx bye");
                     _calledDisconnect = true;
                 }
 
-                client.Recycle(message);
+                _client.Recycle(message);
             }
-            
-        }
-
-        public void ClientThread()
-        {
-            client = StartClient();
-            client.Connect("127.0.0.1", 27015);
-
-            
-            while (!_clientShutdown)
-            {
-
-                // Do nothing / wait
-            }
-
-            TestContext.Out.WriteLine("Stopping client");
-
-            StopClient(client);
             
         }
         
-        [Test, MaxTime(5000)]
+        
+        [Test, Repeat(5), MaxTime(20000)]
         public void NetworkConnectDisconnect()
         {
             Thread serverThread = new Thread(ServerThread);
-            Thread clientThread = new Thread(ClientThread);
 
             serverThread.Start();
-            clientThread.Start();
 
+            _client = StartClient();
+            _client.Connect("127.0.0.1", 27015);
+            
+
+            while (!_clientShutdown)
+            {
+                // Do nothing / wait
+            }
+            
+
+            TestContext.Out.WriteLine("Stopping client");
+            StopClient(_client);
+            
             // join for 10 seconds
-            serverThread.Join(TimeSpan.FromSeconds(10));
-            // server exited, give the client 2-3 seconds to stop.
-            clientThread.Join(TimeSpan.FromSeconds(3));
+            serverThread.Join();
         }
     }
 }

@@ -152,7 +152,7 @@ namespace Lidgren.Network
 			// start network thread
 			m_networkThread = new Thread(new ThreadStart(NetworkLoop));
 			m_networkThread.Name = m_configuration.NetworkThreadName;
-			m_networkThread.IsBackground = true;
+			//m_networkThread.IsBackground = true;
 			m_networkThread.Start();
 
 			// send upnp discovery

@@ -253,7 +253,7 @@ namespace Lidgren.Network
 			// one final heartbeat, will send stuff and do disconnect
 			Heartbeat();
 
-			NetUtility.Sleep(10);
+			//NetUtility.Sleep(10);
 
 			lock (m_initializeLock)
 			{
@@ -262,7 +262,7 @@ namespace Lidgren.Network
 					if (m_socket != null)
 					{
                         // don't allow socket to linger for data
-                        m_socket.LingerState = new LingerOption(false, 2);
+                        //m_socket.LingerState = new LingerOption(false, 2);
                         // shutdown socket send and recieve handlers.
 						m_socket.Shutdown(SocketShutdown.Both);
                         // close connection
@@ -272,25 +272,26 @@ namespace Lidgren.Network
 				catch (Exception ex)
 				{
 				    LogDebug("socket shutdown method exception: " + ex.ToString());
+				    throw;
 				}
                 finally
                 { 
 					m_socket = null;
-					m_status = NetPeerStatus.NotRunning;
-					LogDebug("Shutdown complete");
 
 					// wake up any threads waiting for server shutdown
-					if (m_messageReceivedEvent != null)
-						m_messageReceivedEvent.Set();
-				}
+					m_messageReceivedEvent?.Set();
 
-				m_lastSocketBind = float.MinValue;
-				m_receiveBuffer = null;
-				m_sendBuffer = null;
-				m_unsentUnconnectedMessages.Clear();
-				m_connections.Clear();
-				m_connectionLookup.Clear();
-				m_handshakes.Clear();
+                    m_lastSocketBind = float.MinValue;
+                    m_receiveBuffer = null;
+                    m_sendBuffer = null;
+                    m_unsentUnconnectedMessages?.Clear();
+                    m_connections?.Clear();
+                    m_connectionLookup?.Clear();
+                    m_handshakes?.Clear();
+
+                    m_status = NetPeerStatus.NotRunning;
+                    LogDebug("Shutdown complete");
+                }
 			}
 
 			return;
