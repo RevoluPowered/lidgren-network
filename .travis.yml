@@ -2,6 +2,7 @@ language: csharp
 solution: Lidgren.Network.sln
 install:
   - nuget restore Lidgren.Network.sln
+  - nuget install NUnit.Runners -Version 3.9.0 -OutputDirectory testrunner
 script:
   - xbuild /p:Configuration=Release Lidgren.Network.sln
-  - mono ./UnitTests/bin/Release/UnitTests.exe
+  - mono ./testrunner/NUnit.Runners.3.9.0/tools/nunit-console.exe ./NunitTestSuite/bin/Release/NunitTestSuite.dll
