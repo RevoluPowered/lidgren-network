@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Net;
 using System.Threading;
 using NUnit.Framework;
@@ -9,12 +10,18 @@ namespace NUnitTestSuite
     [TestFixture]
     public class Connections
     {
+        public static void InitTestContext()
+        {
+            // console app sync context
+            SynchronizationContext.SetSynchronizationContext(new SynchronizationContext());
+        }
+
         public NetServer StartServer()
         {
             var config = new NetPeerConfiguration("tests")
             {
                 Port = 27015,
-                MaximumConnections = 10
+                MaximumConnections = 1024
             };
 
             var server = new NetServer(config);
@@ -38,31 +45,16 @@ namespace NUnitTestSuite
             Assert.That(() => server.Status, Is.EqualTo(NetPeerStatus.NotRunning).After(4).Seconds.PollEvery(100));
         }
 
-        public NetClient StartClient()
-        {
-            // console app sync context
-            SynchronizationContext.SetSynchronizationContext( new SynchronizationContext());
 
-            var config = new NetPeerConfiguration("tests");
-            
-            var client = new NetClient(config);
-            client.RegisterReceivedCallback(new SendOrPostCallback(HandleMessageClientCallback));
-            client.Start();
 
-            return client;
-        }
-
-        public void StopClient(NetClient client)
-        {
-            client.Shutdown("closing client connection");
-        }
 
         [Test, Repeat(5)]
         public void NetworkClientInitTest()
         {
-            var client = StartClient();
+            InitTestContext();
+            var client = new TestClient();
 
-            StopClient(client);
+            client.StopClient();
         }
 
         public bool ConnectionStatusHandler( string context, NetIncomingMessage message )
@@ -126,67 +118,43 @@ namespace NUnitTestSuite
             }
         }
         
-        private bool _clientShutdown = false;
-        private bool _calledDisconnect = false;
 
-        public void HandleMessageClientCallback(object peer)
-        {
-            NetIncomingMessage message;
-            NetClient client = (NetClient) peer;
-            Assert.IsNotNull(client, "NetClient null");
 
-            while ((message = client.ReadMessage()) != null)
-            {
-                var status = ConnectionStatusHandler("client", message);
-                if (status)
-                {
-                    TestContext.Out.WriteLine("Received disconnection flag");
-                    _clientShutdown = true;
-                    break;
-                }
 
-                // disconnect client ONLY when the client has connected
-                if (client.ConnectionStatus == NetConnectionStatus.Connected && !_calledDisconnect)
-                {
-                    TestContext.Out.WriteLine("Informing client socket to disconnect and waiting for proper disconnect flag");
-                    client.Disconnect("k thx bye");
-                    _calledDisconnect = true;
-                }
 
-                client.Recycle(message);
-            }
-            
-        }
-        
-        
-        [Test, Repeat(5), MaxTime(20000)]
+        [Test]
         public void NetworkConnectDisconnect()
         {
+            InitTestContext();
             TestContext.Out.WriteLine("-----------------------------------------------------------");
             Thread serverThread = new Thread(ServerThread);
 
             serverThread.Start();
 
-            var client = StartClient();
-            client.Connect(new IPEndPoint(IPAddress.Loopback, 27015));
+            var clients = new List<TestClient>(200);
 
-
-
-
-            while (!_clientShutdown)
+            // pool 20 clients
+            for (var x = 0; x < 200; x++)
             {
-                // Do nothing / wait
+                clients.Add( new TestClient());
+            }
+
+            foreach (var client in clients)
+            {
+                client.DoConnectTest();
             }
 
 
+            foreach (var client in clients)
+            {
+                client.WaitForExit();
+            }
+            
             // join for 5 seconds
             serverThread.Join(5);
 
 
-            TestContext.Out.WriteLine("Stopping client");
-            StopClient(client);
 
-            client.GetNetworkThread().Join();
 
 
         }

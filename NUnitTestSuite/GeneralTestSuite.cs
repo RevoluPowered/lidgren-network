@@ -13,7 +13,13 @@ namespace NUnitTestSuite
     [TestFixture]
     class GeneralTestSuite
     {
-        [Test, MaxTime(20000), Repeat(5)]
+        [OneTimeSetUp]
+        public void ContextSet()
+        {
+            Connections.InitTestContext();
+        }
+
+        [Test, MaxTime(30000), Repeat(5)]
         public void GenericTestSuite()
         {
             NetPeerConfiguration config = new NetPeerConfiguration("oldUnitTests");
