@@ -150,7 +150,7 @@ namespace Lidgren.Network
 
 		internal void Heartbeat(double now, uint frameCounter)
 		{
-			m_peer.VerifyNetworkThread();
+			NetPeer.VerifyNetworkThread();
 
 			NetException.Assert(m_status != NetConnectionStatus.InitiatedConnect && m_status != NetConnectionStatus.RespondedConnect);
 
@@ -280,7 +280,7 @@ namespace Lidgren.Network
 			//
 			if (m_sendBufferWritePtr > 0)
 			{
-				m_peer.VerifyNetworkThread();
+				NetPeer.VerifyNetworkThread();
 				NetException.Assert(m_sendBufferWritePtr > 0 && m_sendBufferNumMessages > 0);
 				m_peer.SendPacket(m_sendBufferWritePtr, m_remoteEndPoint, m_sendBufferNumMessages, out connectionReset);
 				m_statistics.PacketSent(m_sendBufferWritePtr, m_sendBufferNumMessages);
@@ -293,7 +293,7 @@ namespace Lidgren.Network
 		// This method is called from the ISenderChannels
 		internal void QueueSendMessage(NetOutgoingMessage om, int seqNr)
 		{
-			m_peer.VerifyNetworkThread();
+			NetPeer.VerifyNetworkThread();
 
 			int sz = om.GetEncodedSize();
 			//if (sz > m_currentMTU)
@@ -410,7 +410,7 @@ namespace Lidgren.Network
 		// received a library message while Connected
 		internal void ReceivedLibraryMessage(NetMessageType tp, int ptr, int payloadLength)
 		{
-			m_peer.VerifyNetworkThread();
+			NetPeer.VerifyNetworkThread();
 
 			double now = NetTime.Now;
 
@@ -487,7 +487,7 @@ namespace Lidgren.Network
 
 		internal void ReceivedMessage(NetIncomingMessage msg)
 		{
-			m_peer.VerifyNetworkThread();
+			NetPeer.VerifyNetworkThread();
 
 			NetMessageType tp = msg.m_receivedMessageType;
 
@@ -501,7 +501,7 @@ namespace Lidgren.Network
 
 		private NetReceiverChannelBase CreateReceiverChannel(NetMessageType tp)
 		{
-			m_peer.VerifyNetworkThread();
+			NetPeer.VerifyNetworkThread();
 
 			// create receiver channel
 			NetReceiverChannelBase chan;

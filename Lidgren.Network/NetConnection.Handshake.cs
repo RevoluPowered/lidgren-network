@@ -28,9 +28,9 @@ namespace Lidgren.Network
 		// heartbeat called when connection still is in m_handshakes of NetPeer
 		internal void UnconnectedHeartbeat(double now)
 		{
-			m_peer.VerifyNetworkThread();
+		    NetPeer.VerifyNetworkThread();
 
-			if (m_disconnectRequested)
+            if (m_disconnectRequested)
 				ExecuteDisconnect(m_disconnectMessage, true);
 
 			if (m_connectRequested)
@@ -97,10 +97,10 @@ namespace Lidgren.Network
 
 		internal void ExecuteDisconnect(string reason, bool sendByeMessage)
 		{
-			m_peer.VerifyNetworkThread();
+		    NetPeer.VerifyNetworkThread();
 
-			// clear send queues
-			for (int i = 0; i < m_sendChannels.Length; i++)
+            // clear send queues
+            for (int i = 0; i < m_sendChannels.Length; i++)
 			{
 				NetSenderChannelBase channel = m_sendChannels[i];
 				if (channel != null)
@@ -131,9 +131,9 @@ namespace Lidgren.Network
 
 		internal void SendConnect(double now)
 		{
-			m_peer.VerifyNetworkThread();
+		    NetPeer.VerifyNetworkThread();
 
-			int preAllocate = 13 + m_peerConfiguration.AppIdentifier.Length;
+            int preAllocate = 13 + m_peerConfiguration.AppIdentifier.Length;
 			preAllocate += (m_localHailMessage == null ? 0 : m_localHailMessage.LengthBytes);
 
 			NetOutgoingMessage om = m_peer.CreateMessage(preAllocate);
@@ -158,9 +158,9 @@ namespace Lidgren.Network
 		internal void SendConnectResponse(double now, bool onLibraryThread)
 		{
 			if (onLibraryThread)
-				m_peer.VerifyNetworkThread();
+			    NetPeer.VerifyNetworkThread();
 
-			NetOutgoingMessage om = m_peer.CreateMessage(m_peerConfiguration.AppIdentifier.Length + 13 + (m_localHailMessage == null ? 0 : m_localHailMessage.LengthBytes));
+            NetOutgoingMessage om = m_peer.CreateMessage(m_peerConfiguration.AppIdentifier.Length + 13 + (m_localHailMessage == null ? 0 : m_localHailMessage.LengthBytes));
 			om.m_messageType = NetMessageType.ConnectResponse;
 			om.Write(m_peerConfiguration.AppIdentifier);
 			om.Write(m_peer.m_uniqueIdentifier);
@@ -185,9 +185,9 @@ namespace Lidgren.Network
 		internal void SendDisconnect(string reason, bool onLibraryThread)
 		{
 			if (onLibraryThread)
-				m_peer.VerifyNetworkThread();
+			    NetPeer.VerifyNetworkThread();
 
-			NetOutgoingMessage om = m_peer.CreateMessage(reason);
+            NetOutgoingMessage om = m_peer.CreateMessage(reason);
 			om.m_messageType = NetMessageType.Disconnect;
 			Interlocked.Increment(ref om.m_recyclingCount);
 			if (onLibraryThread)
@@ -281,9 +281,9 @@ namespace Lidgren.Network
 
 		internal void ReceivedHandshake(double now, NetMessageType tp, int ptr, int payloadLength)
 		{
-			m_peer.VerifyNetworkThread();
+		    NetPeer.VerifyNetworkThread();
 
-			byte[] hail;
+            byte[] hail;
 			switch (tp)
 			{
 				case NetMessageType.Connect:

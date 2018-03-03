@@ -39,9 +39,11 @@ namespace NUnitTestSuite
         public void NetworkServerInitTest()
         {
             var server = StartServer();
-            StopServer(server);
 
-            Assert.AreEqual(NetPeerStatus.ShutdownRequested, server.Status);
+            Assert.That(() => server.Status, Is.EqualTo(NetPeerStatus.Running).After(4).Seconds.PollEvery(100));
+
+            StopServer(server);
+            
             Assert.That(() => server.Status, Is.EqualTo(NetPeerStatus.NotRunning).After(4).Seconds.PollEvery(100));
         }
 
@@ -53,8 +55,12 @@ namespace NUnitTestSuite
         {
             InitTestContext();
             var client = new TestClient();
+            
+            Assert.That(() => client.NetClient.Status, Is.EqualTo(NetPeerStatus.Running).After(4).Seconds.PollEvery(50));
 
             client.StopClient();
+
+            Assert.That(() => client.NetClient.Status, Is.EqualTo(NetPeerStatus.NotRunning).After(4).Seconds.PollEvery(50));
         }
 
         public bool ConnectionStatusHandler( string context, NetIncomingMessage message )
@@ -114,7 +120,9 @@ namespace NUnitTestSuite
             {
                 TestContext.Out.WriteLine("Stopping server");
                 StopServer(server);
-                server.GetNetworkThread().Join();
+
+                // wait for network thread to exit
+                server.WaitForExit();
             }
         }
         
@@ -131,14 +139,14 @@ namespace NUnitTestSuite
 
             serverThread.Start();
 
-            var clients = new List<TestClient>(200);
+            var clients = new List<TestClient>(1000);
 
             // pool 20 clients
-            for (var x = 0; x < 200; x++)
+            for (var x = 0; x < 1000; x++)
             {
                 clients.Add( new TestClient());
             }
-
+            
             foreach (var client in clients)
             {
                 client.DoConnectTest();
@@ -147,16 +155,11 @@ namespace NUnitTestSuite
 
             foreach (var client in clients)
             {
-                client.WaitForExit();
+                client.NetClient.WaitForExit();
             }
             
             // join for 5 seconds
             serverThread.Join(5);
-
-
-
-
-
         }
     }
 }

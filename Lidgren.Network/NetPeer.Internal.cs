@@ -1,11 +1,12 @@
 ﻿using System;
+using System.Collections;
 using System.Net;
 using System.Threading;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Net.Sockets;
 using System.Collections.Generic;
-
+using System.Linq;
 #if !__NOIPENDPOINT__
 using NetEndPoint = System.Net.IPEndPoint;
 #endif
@@ -14,14 +15,37 @@ namespace Lidgren.Network
 {
 	public partial class NetPeer
 	{
-		private NetPeerStatus m_status;
-		private Thread m_networkThread;
+	    private static Dictionary<Socket, NetPeer> peerSockets = null;
+	    private static Object _peerSocketListLock = true;
 
-	    public Thread GetNetworkThread()
+        private NetPeerStatus m_status;
+
+	    private static Thread _networkThread = null;
+
+        /// <summary>
+        /// Wait for networking to shutdown fully!
+        /// Warning: this won't happen if connections are open or any NetPeer's exist!
+        /// Call shutdown on them before calling this.
+        /// </summary>
+	    public void WaitForExit()
 	    {
-	        return m_networkThread;
+	        var thread = _networkThread;
+
+	        if (thread == null || !thread.IsAlive)
+	        {
+	            return;
+	        }
+
+	        // max connection shutdown time is 4 seconds, otherwise exit.
+	        thread.Join(4000);
 	    }
-		private Socket m_socket;
+
+        public Thread GetNetworkThread()
+	    {
+	        return _networkThread;
+	    }
+
+	    private Socket m_socket = null;
 		internal byte[] m_sendBuffer;
 		internal byte[] m_receiveBuffer;
 		internal NetIncomingMessage m_readHelperMessage;
@@ -121,9 +145,27 @@ namespace Lidgren.Network
 			}
 			m_lastSocketBind = now;
 
-			if (m_socket == null)
-				m_socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
-            
+		    if (m_socket == null)
+		    {
+		        m_socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+		    }
+
+		    lock (_peerSocketListLock)
+		    {
+		        if (peerSockets == null)
+		        {
+                    peerSockets = new Dictionary<Socket, NetPeer>();
+		        }
+
+		        if (m_socket == null)
+		        {
+                    Console.WriteLine("socket is null error");
+		            throw new Exception("Socket failed to assign valid value for m_socket, null detected.");
+		        }
+
+		        peerSockets.Add(m_socket, this);
+		    }
+
 		    m_socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, (int)1);
 
 			m_socket.ReceiveBufferSize = m_configuration.ReceiveBufferSize;
@@ -165,7 +207,9 @@ namespace Lidgren.Network
 		{
 			lock (m_initializeLock)
 			{
-				m_configuration.Lock();
+			    // make sure this is properly set up again, if required.
+
+			    m_configuration.Lock();
 
 				if (m_status == NetPeerStatus.Running)
 					return;
@@ -200,41 +244,61 @@ namespace Lidgren.Network
 			}
 		}
 
+        /// <summary>
+        /// Network Update - called and executed singularly and only uses one thread for the application instance
+        /// </summary>
 		private void NetworkLoop()
 		{
 			VerifyNetworkThread();
 
 			LogDebug("Network thread started");
+		    bool shutdown_flag = false;
 
-			//
-			// Network loop
-			//
-			do
-			{
-				try
-				{
-					Heartbeat();
-				}
-				catch (Exception ex)
-				{
-					LogWarning(ex.ToString());
-				}
-			} while (m_status == NetPeerStatus.Running);
+		    do
+		    {
+		        try
+		        {
+		            shutdown_flag = NetworkUpdate();
+		            if (shutdown_flag)
+		            {
+                        Console.WriteLine("SHUTDOWN FLAG - called!");
+		            }
+		        }
+		        catch (Exception ex)
+		        {
+		            Console.WriteLine("net update exception: " + ex.ToString());
+		            LogWarning(ex.ToString());
+		        }
+		    } while (shutdown_flag == false);
+		    
 
-			//
-			// perform shutdown
-			//
-			ExecutePeerShutdown();
+		    FullShutdown();
 		}
+
+	    private void FullShutdown()
+	    {
+	        lock (_networkThread)
+	        {
+	            // shutdown lidgren fully
+	            _networkThread = null;
+	        }
+
+	        lock (_peerSocketListLock)
+	        {
+                peerSockets = null;
+	        }
+
+            Console.WriteLine("Full shutdown!");
+	    }
 
 		private void ExecutePeerShutdown()
 		{
 			VerifyNetworkThread();
 
-			LogDebug("Shutting down...");
+		    Console.WriteLine("Network shutdown enter");
 
-			// disconnect and make one final heartbeat
-			var list = new List<NetConnection>(m_handshakes.Count + m_connections.Count);
+            // disconnect and make one final heartbeat
+            var list = new List<NetConnection>(m_handshakes.Count + m_connections.Count);
 			lock (m_connections)
 			{
 				foreach (var conn in m_connections)
@@ -255,8 +319,8 @@ namespace Lidgren.Network
 
 			FlushDelayedPackets();
 
-			// one final heartbeat, will send stuff and do disconnect
-			Heartbeat();
+            // one final heartbeat, will send stuff and do disconnect
+            PeerUpdate();
 
 			NetUtility.Sleep(10);
 
@@ -279,10 +343,19 @@ namespace Lidgren.Network
 				    throw;
 				}
                 finally
-                { 
-					m_socket = null;
+				{
+				    if (m_socket != null)
+				    {
+				        lock (_peerSocketListLock)
+				        {
+				            peerSockets.Remove(m_socket);
 
-					// wake up any threads waiting for server shutdown
+				            m_socket = null;
+				        }
+				        
+				    }
+
+				    // wake up any threads waiting for server shutdown
 					m_messageReceivedEvent?.Set();
 
                     m_lastSocketBind = float.MinValue;
@@ -295,6 +368,7 @@ namespace Lidgren.Network
 
                     m_status = NetPeerStatus.NotRunning;
                     LogDebug("Shutdown complete");
+                    Console.WriteLine("Shutdown network peer properly");
                 }
 			}
 
@@ -316,7 +390,14 @@ namespace Lidgren.Network
 	        }
         }
 
-	    private void ProcessHandshakes(double delta, double now, double maxConnectionHeartbeatsPerSecond)
+
+        /// <summary>
+        /// Process handshake messages / client connected, client disconnected
+        /// </summary>
+        /// <param name="delta"></param>
+        /// <param name="now"></param>
+        /// <param name="maxConnectionHeartbeatsPerSecond"></param>
+	    private void ProcessHandshakes( double delta, double now, double maxConnectionHeartbeatsPerSecond)
 	    {
 	        // do handshake heartbeats
 	        if ((m_frameCounter % 3) == 0)
@@ -348,93 +429,139 @@ namespace Lidgren.Network
 	        
 	    }
 
-	    private void Heartbeat()
+	    private void ProcessConnectionUpdates( double now )
+	    {
+	        // do connection heartbeats
+	        lock (m_connections)
+	        {
+	            for (int i = m_connections.Count - 1; i >= 0; i--)
+	            {
+	                var conn = m_connections[i];
+	                conn.Heartbeat(now, m_frameCounter);
+	                if (conn.m_status == NetConnectionStatus.Disconnected)
+	                {
+	                    //
+	                    // remove connection
+	                    //
+	                    m_connections.RemoveAt(i);
+	                    m_connectionLookup.Remove(conn.RemoteEndPoint);
+	                }
+	            }
+	        }
+	        m_executeFlushSendQueue = false;
+
+	        // send unsent unconnected messages
+	        NetTuple<NetEndPoint, NetOutgoingMessage> unsent;
+	        while (m_unsentUnconnectedMessages.TryDequeue(out unsent))
+	        {
+	            NetOutgoingMessage om = unsent.Item2;
+
+	            int len = om.Encode(m_sendBuffer, 0, 0);
+
+	            Interlocked.Decrement(ref om.m_recyclingCount);
+	            if (om.m_recyclingCount <= 0)
+	                Recycle(om);
+
+	            bool connReset;
+	            SendPacket(len, unsent.Item1, 1, out connReset);
+	        }
+        }
+
+	    private void PeerUpdate()
+	    {
+            //LogDebug("peer-update");
+            int maxCHBpS = 1250;
+	        if (maxCHBpS < 250)
+	            maxCHBpS = 250;
+
+            double now = NetTime.Now;
+	        double delta = now - m_lastHeartbeat;
+	        m_frameCounter++;
+	        m_lastHeartbeat = now;
+
+	        if (delta > (1.0 / maxCHBpS) || delta < 0.0)
+	        {
+	            ProcessHandshakes(delta, now, maxCHBpS);
+	            FlushNetwork();
+	            ProcessConnectionUpdates(now);
+
+	            /*#if DEBUG
+                SendDelayedPackets();
+                #endif*/
+	        }
+
+	        m_upnp?.CheckForDiscoveryTimeout();
+        }
+        /// <summary>
+        /// Singular network update thread
+        /// This must be static, because otherwise people might try to use peer in a local thread context which is incorrect.
+        /// </summary>
+	    private static bool NetworkUpdate()
 		{
 			VerifyNetworkThread();
 
-			double now = NetTime.Now;
-			double delta = now - m_lastHeartbeat;
+		    List<NetPeer> netPeers = null;
+		    ArrayList sockets = null;
+		    Dictionary<Socket, NetPeer> copyDictionary = null;
 
-		    int maxCHBpS = 1250;
-			if (maxCHBpS < 250)
-				maxCHBpS = 250;
+            lock (_peerSocketListLock)
+            {
+                netPeers = peerSockets.Values.ToList();
+                sockets = new ArrayList(peerSockets.Keys);
+                peerSockets.Keys.ToArray();
+                copyDictionary = new Dictionary<Socket, NetPeer>(peerSockets);
+            }
 
-		    if (delta > (1.0 / maxCHBpS) || delta < 0.0) // max connection heartbeats/second max
+		    foreach (var peer in netPeers)
 		    {
-		        m_frameCounter++;
-		        m_lastHeartbeat = now;
+		        if (peer.m_status == NetPeerStatus.ShutdownRequested)
+		        {
+		            peer.LogDebug("shutdown-request-processing");
 
+		            try
+		            {
+		                // shutdown peer
+		                peer.ExecutePeerShutdown();
+                    }
+		            catch (Exception e)
+		            {
+		                Console.WriteLine(e);
+		                throw;
+		            }
 
-                ProcessHandshakes(delta, now, maxCHBpS);
+		            return true;
+		        }
+		        else if (peer.m_status == NetPeerStatus.Running)
+		        {
+		            // update peer
+		            peer.PeerUpdate();
+		        }
+		    }
 
-/*#if DEBUG
-				SendDelayedPackets();
-#endif*/
+		    // no sockets to poll prep for exit condition
+		    if (netPeers.Count <= 0) return true;
+            
 
-                FlushNetwork();
+		    Socket.Select(sockets, null, null, 500);
 
-				// do connection heartbeats
-				lock (m_connections)
-				{
-					for (int i = m_connections.Count - 1; i >= 0; i--)
-					{
-						var conn = m_connections[i];
-						conn.Heartbeat(now, m_frameCounter);
-						if (conn.m_status == NetConnectionStatus.Disconnected)
-						{
-							//
-							// remove connection
-							//
-							m_connections.RemoveAt(i);
-							m_connectionLookup.Remove(conn.RemoteEndPoint);
-						}
-					}
-				}
-				m_executeFlushSendQueue = false;
-
-				// send unsent unconnected messages
-				NetTuple<NetEndPoint, NetOutgoingMessage> unsent;
-				while (m_unsentUnconnectedMessages.TryDequeue(out unsent))
-				{
-					NetOutgoingMessage om = unsent.Item2;
-
-					int len = om.Encode(m_sendBuffer, 0, 0);
-
-					Interlocked.Decrement(ref om.m_recyclingCount);
-					if (om.m_recyclingCount <= 0)
-						Recycle(om);
-
-					bool connReset;
-					SendPacket(len, unsent.Item1, 1, out connReset);
-				}
-			}
-
-            if (m_upnp != null)
-                m_upnp.CheckForDiscoveryTimeout();
-
-			//
-			// read from socket
-			//
-			if (m_socket == null)
-				return;
-
-
-            // ideally convert to Socket.Select();
-
-			if (!m_socket.Poll(1000, SelectMode.SelectRead)) // wait up to 1 ms for data to arrive
-				return;
-
-            SocketDataHandler(now, this);
+		    foreach (var socket in sockets)
+		    {
+		        SocketDataHandler(copyDictionary[(System.Net.Sockets.Socket)socket]);
+		    }
+		    
+            // no shutdown 
+		    return false;
 		}
 
-	    protected static void SocketDataHandler(double now, NetPeer peer)
+        /// <summary>
+        /// Called when the socket has data to process
+        /// </summary>
+        /// <param name="now"></param>
+        /// <param name="peer"></param>
+	    protected static void SocketDataHandler( NetPeer peer)
 	    {
-
-            //if (m_socket == null || m_socket.Available < 1)
-            //	return;
-
-            // update now
-            now = NetTime.Now;
+            // retrieve new now time
+	        double now = NetTime.Now;
 
             do
             {
@@ -766,10 +893,10 @@ namespace Lidgren.Network
 		}
 
 		[Conditional("DEBUG")]
-		internal void VerifyNetworkThread()
+		internal static void VerifyNetworkThread()
 		{
 			Thread ct = Thread.CurrentThread;
-			if (Thread.CurrentThread != m_networkThread)
+			if (Thread.CurrentThread != _networkThread)
 				throw new NetException("Executing on wrong thread! Should be library system thread (is " + ct.Name + " mId " + ct.ManagedThreadId + ")");
 		}
 

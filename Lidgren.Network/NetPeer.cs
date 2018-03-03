@@ -2,7 +2,7 @@
 using System.Threading;
 using System.Collections.Generic;
 using System.Net;
-
+using System.Net.Sockets;
 #if !__NOIPENDPOINT__
 using NetEndPoint = System.Net.IPEndPoint;
 #endif
@@ -83,8 +83,7 @@ namespace Lidgren.Network
 		{
 			get
 			{
-				lock (m_connections)
-					return new List<NetConnection>(m_connections);
+				return new List<NetConnection>(m_connections);
 			}
 		}
 
@@ -126,6 +125,32 @@ namespace Lidgren.Network
 			m_receivedFragmentGroups = new Dictionary<NetConnection, Dictionary<int, ReceivedFragmentGroup>>();	
 		}
 
+
+	    internal object NetworkLock = true;
+	    internal void StartNetworkThread()
+	    {
+	        lock (NetworkLock)
+	        {
+	            // thread shutdown behaviour is, it will shut down when netpeer's have been shut down, if it suddenly gets a new netpeer to work with
+	            // it initialises a new thread for it to use
+	            // if the thread has died, or the thread hasn't been started, overwrite it.
+	            if (_networkThread == null || _networkThread.IsAlive == false)
+	            {
+	                // extra alloc, just in case it's a dead thread
+	                _networkThread = null;
+
+	                // start network thread
+	                _networkThread = new Thread(NetworkLoop)
+	                {
+	                    Name = "Lidgren.Network Thread"
+	                };
+
+	                //m_networkThread.IsBackground = true;
+	                _networkThread.Start();
+	            }
+            }
+	    }
+
 		/// <summary>
 		/// Binds to socket and spawns the networking thread
 		/// </summary>
@@ -139,28 +164,26 @@ namespace Lidgren.Network
 			}
 
 			m_status = NetPeerStatus.Starting;
-
+            /*
 			// fix network thread name
 			if (m_configuration.NetworkThreadName == "Lidgren network thread")
 			{
-				int pc = Interlocked.Increment(ref s_initializedPeersCount);
+				var pc = Interlocked.Increment(ref s_initializedPeersCount);
 				m_configuration.NetworkThreadName = "Lidgren network thread " + pc.ToString();
-			}
+			}*/
 
 			InitializeNetwork();
-			
-			// start network thread
-			m_networkThread = new Thread(new ThreadStart(NetworkLoop));
-			m_networkThread.Name = m_configuration.NetworkThreadName;
-			//m_networkThread.IsBackground = true;
-			m_networkThread.Start();
 
-			// send upnp discovery
-			if (m_upnp != null)
-				m_upnp.Discover(this);
+            // Message processing for network thread is only executed in a single network thread instance
+            // this is for when you are hosting many different NetPeer's to lower the CPU usage
+            // also it means we can use Socket.Select instead of Socket.Poll
+            StartNetworkThread();
+
+		    // send upnp discovery
+			m_upnp?.Discover(this);
 
 			// allow some time for network thread to start up in case they call Connect() or UPnP calls immediately
-			NetUtility.Sleep(50);
+			NetUtility.Sleep(100);
 		}
 
 		/// <summary>
@@ -304,48 +327,46 @@ namespace Lidgren.Network
 			if (remoteEndPoint == null)
 				throw new ArgumentNullException("remoteEndPoint");
 
-			lock (m_connections)
+			
+			if (m_status == NetPeerStatus.NotRunning)
+				throw new NetException("Must call Start() first");
+
+			if (m_connectionLookup.ContainsKey(remoteEndPoint))
+				throw new NetException("Already connected to that endpoint!");
+
+			NetConnection hs;
+			if (m_handshakes.TryGetValue(remoteEndPoint, out hs))
 			{
-				if (m_status == NetPeerStatus.NotRunning)
-					throw new NetException("Must call Start() first");
-
-				if (m_connectionLookup.ContainsKey(remoteEndPoint))
-					throw new NetException("Already connected to that endpoint!");
-
-				NetConnection hs;
-				if (m_handshakes.TryGetValue(remoteEndPoint, out hs))
+				// already trying to connect to that endpoint; make another try
+				switch (hs.m_status)
 				{
-					// already trying to connect to that endpoint; make another try
-					switch (hs.m_status)
-					{
-						case NetConnectionStatus.InitiatedConnect:
-							// send another connect
-							hs.m_connectRequested = true;
-							break;
-						case NetConnectionStatus.RespondedConnect:
-							// send another response
-							hs.SendConnectResponse(NetTime.Now, false);
-							break;
-						default:
-							// weird
-							LogWarning("Weird situation; Connect() already in progress to remote endpoint; but hs status is " + hs.m_status);
-							break;
-					}
-					return hs;
+					case NetConnectionStatus.InitiatedConnect:
+						// send another connect
+						hs.m_connectRequested = true;
+						break;
+					case NetConnectionStatus.RespondedConnect:
+						// send another response
+						hs.SendConnectResponse(NetTime.Now, false);
+						break;
+					default:
+						// weird
+						LogWarning("Weird situation; Connect() already in progress to remote endpoint; but hs status is " + hs.m_status);
+						break;
 				}
-
-				NetConnection conn = new NetConnection(this, remoteEndPoint);
-				conn.m_status = NetConnectionStatus.InitiatedConnect;
-				conn.m_localHailMessage = hailMessage;
-
-				// handle on network thread
-				conn.m_connectRequested = true;
-				conn.m_connectionInitiator = true;
-
-				m_handshakes.Add(remoteEndPoint, conn);
-
-				return conn;
+				return hs;
 			}
+
+			NetConnection conn = new NetConnection(this, remoteEndPoint);
+			conn.m_status = NetConnectionStatus.InitiatedConnect;
+			conn.m_localHailMessage = hailMessage;
+
+			// handle on network thread
+			conn.m_connectRequested = true;
+			conn.m_connectionInitiator = true;
+
+			m_handshakes.Add(remoteEndPoint, conn);
+
+			return conn;
 		}
 
 		/// <summary>
@@ -384,6 +405,15 @@ namespace Lidgren.Network
 			LogDebug("Shutdown requested");
 			m_shutdownReason = bye;
 			m_status = NetPeerStatus.ShutdownRequested;
-		}
+
+		    lock (_peerSocketListLock)
+		    {
+		        if (peerSockets != null && peerSockets.Count == 1)
+		        {
+		            // wait for this thread to exit before terminating the thread abruptly
+		            //GetNetworkThread().Join();
+		        }
+		    }
+        }
 	}
 }
