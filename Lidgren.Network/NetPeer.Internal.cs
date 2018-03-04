@@ -1,362 +1,426 @@
 ﻿using System;
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Net;
 using System.Threading;
-using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Net.Sockets;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 #if !__NOIPENDPOINT__
 using NetEndPoint = System.Net.IPEndPoint;
+
 #endif
 
 namespace Lidgren.Network
 {
-	public partial class NetPeer
-	{
-	    private static Dictionary<Socket, NetPeer> peerSockets = null;
-	    private static Object _peerSocketListLock = true;
+    public static class NetPeerManager
+    {
+        /// <summary>
+        /// Peer List (thread safe)
+        /// </summary>
+        public static ConcurrentDictionary<NetPeer, Socket> Peers = new ConcurrentDictionary<NetPeer, Socket>();
 
-        private NetPeerStatus m_status;
+        public static Thread NetworkUpdateThread = null;
+        public static Object InitThreadLock = new Object();
 
-	    private static Thread _networkThread = null;
+        public static void WaitForExit()
+        {
+            NetworkUpdateThread?.Join();
+        }
+
+        public static void AddPeer(NetPeer peer)
+        {
+            if (!Peers.TryAdd(peer, peer.Socket))
+            {
+                Task.Run(() => AddPeerTask(peer));
+            }
+        }
+
+        public static void RemovePeer(NetPeer peer)
+        {
+            if (Peers.TryRemove(peer, out _))
+            {
+                Task.Run(() => RemovePeerTask(peer));
+            }
+        }
+
+        // pattern is, if you can't do it now, do it later.
+
 
         /// <summary>
-        /// Wait for networking to shutdown fully!
-        /// Warning: this won't happen if connections are open or any NetPeer's exist!
-        /// Call shutdown on them before calling this.
+        /// Add peer task, will add when succedes
         /// </summary>
-	    public void WaitForExit()
-	    {
-	        var thread = _networkThread;
+        /// <param name="peer"></param>
+        private static async Task AddPeerTask(NetPeer peer)
+        {
+            // return immediately
+            if (Peers == null) return;
 
-	        if (thread == null || !thread.IsAlive)
-	        {
-	            return;
-	        }
+            // wait for add to work
+            while (!Peers.TryAdd(peer, peer.Socket))
+            {
+                await Task.Delay(1);
 
-	        // max connection shutdown time is 4 seconds, otherwise exit.
-	        thread.Join(4000);
-	    }
+                // wait until add succedes
+            }
+        }
 
-        public Thread GetNetworkThread()
-	    {
-	        return _networkThread;
-	    }
 
-	    private Socket m_socket = null;
-		internal byte[] m_sendBuffer;
-		internal byte[] m_receiveBuffer;
-		internal NetIncomingMessage m_readHelperMessage;
-		private EndPoint m_senderRemote;
-		private object m_initializeLock = new object();
-		private uint m_frameCounter;
-		private double m_lastHeartbeat;
-		private double m_lastSocketBind = float.MinValue;
-		private NetUPnP m_upnp;
-		internal bool m_needFlushSendQueue;
+        /// <summary>
+        /// Remove task, will add when succedes
+        /// </summary>
+        /// <param name="peer"></param>
+        private static async Task RemovePeerTask(NetPeer peer)
+        {
+            // return immediately
+            if (Peers == null) return;
 
-		internal readonly NetPeerConfiguration m_configuration;
-		private readonly NetQueue<NetIncomingMessage> m_releasedIncomingMessages;
-		internal readonly NetQueue<NetTuple<NetEndPoint, NetOutgoingMessage>> m_unsentUnconnectedMessages;
+            // wait for remove to work
+            while (!Peers.TryRemove(peer, out _))
+            {
+                await Task.Delay(1);
 
-		internal Dictionary<NetEndPoint, NetConnection> m_handshakes;
+                // wait until add succedes
+            }
+        }
 
-		internal readonly NetPeerStatistics m_statistics;
-		internal long m_uniqueIdentifier;
-		internal bool m_executeFlushSendQueue;
 
-		private AutoResetEvent m_messageReceivedEvent;
-		private List<NetTuple<SynchronizationContext, SendOrPostCallback>> m_receiveCallbacks;
+        public static void StartNetworkThread()
+        {
+            lock (InitThreadLock)
+            {
+                // thread shutdown behaviour is, it will shut down when netpeer's have been shut down, if it suddenly gets a new netpeer to work with
+                // it initialises a new thread for it to use
+                // if the thread has died, or the thread hasn't been started, overwrite it.
+                if (NetworkUpdateThread == null || NetworkUpdateThread.IsAlive == false)
+                {
+                    // extra alloc, just in case it's a dead thread
+                    NetworkUpdateThread = null;
 
-		/// <summary>
-		/// Gets the socket, if Start() has been called
-		/// </summary>
-		public Socket Socket { get { return m_socket; } }
+                    // start network thread
+                    NetworkUpdateThread = new Thread(NetworkLoop)
+                    {
+                        Name = "Lidgren.Network Thread"
+                    };
 
-		/// <summary>
-		/// Call this to register a callback for when a new message arrives
-		/// </summary>
-		public void RegisterReceivedCallback(SendOrPostCallback callback, SynchronizationContext syncContext = null)
-		{
-			if (syncContext == null)
-				syncContext = SynchronizationContext.Current;
-			if (syncContext == null)
-				throw new NetException("Need a SynchronizationContext to register callback on correct thread!");
-			if (m_receiveCallbacks == null)
-				m_receiveCallbacks = new List<NetTuple<SynchronizationContext, SendOrPostCallback>>();
-			m_receiveCallbacks.Add(new NetTuple<SynchronizationContext, SendOrPostCallback>(syncContext, callback));
-		}
+                    //m_networkThread.IsBackground = true;
+                    NetworkUpdateThread.Start();
+                }
+            }
+        }
 
-		/// <summary>
-		/// Call this to unregister a callback, but remember to do it in the same synchronization context!
-		/// </summary>
-		public void UnregisterReceivedCallback(SendOrPostCallback callback)
-		{
-			if (m_receiveCallbacks == null)
-				return;
+        /// <summary>
+        /// Singular network update thread
+        /// This must be static, because otherwise people might try to use peer in a local thread context which is incorrect.
+        /// </summary>
+        private static void NetworkLoop()
+        {
+            bool running = true;
+            bool hadElements = false;
+            while (running)
+            {
+                // if our peer manager had elements and they're now gone, time to shutdown the thread, if we have no peers left
+                if (hadElements && running)
+                {
+                    if (Peers.Count == 0)
+                    {
+                        return; // time to exit, no peers exist anymore.
+                    }
+                }
 
-			// remove all callbacks regardless of sync context
-			m_receiveCallbacks.RemoveAll(tuple => tuple.Item2.Equals(callback));
+                foreach (var kvp in Peers)
+                {
+                    hadElements = true;
+                    var peer = kvp.Key;
+                    if (peer.Status == NetPeerStatus.Running)
+                    {
+                        peer.PeerUpdate();
+                    }
 
-			if (m_receiveCallbacks.Count < 1)
-				m_receiveCallbacks = null;
-		}
+                    if (peer.Status == NetPeerStatus.ShutdownRequested)
+                    {
+                        try
+                        {
+                            // shutdown peer
+                            peer.ExecutePeerShutdown();
+                        }
+                        catch (Exception e)
+                        {
+                            Console.WriteLine(e);
+                            throw;
+                        }
+                    }
+                }
 
-		internal void ReleaseMessage(NetIncomingMessage msg)
-		{
-			NetException.Assert(msg.m_incomingMessageType != NetIncomingMessageType.Error);
+                // no sockets to poll prep for exit condition
+                if (Peers.Count == 0) continue;
 
-			if (msg.m_isFragment)
-			{
-				HandleReleasedFragment(msg);
-				return;
-			}
+                // Socket.Select is faster than running Socket.Poll foreach socket.
+                var sockets = Peers.Values.ToList();
+                Socket.Select(sockets, null, null, 1000);
 
-			m_releasedIncomingMessages.Enqueue(msg);
+                // only update selected sockets
+                foreach (var socket in sockets)
+                {
+                    // retrieve socket peer to process data on it, as data is pending on it's connection
+                    var pair = Peers.SingleOrDefault(kvp => kvp.Value == socket);
 
-			if (m_messageReceivedEvent != null)
-				m_messageReceivedEvent.Set();
+                    // potential place to pass to socket Task?
+                    pair.Key.SocketDataHandler();
+                }
 
-			if (m_receiveCallbacks != null)
-			{
-				foreach (var tuple in m_receiveCallbacks)
-				{
-					try
-					{
-						tuple.Item1.Post(tuple.Item2, this);
-					}
-					catch (Exception ex)
-					{
-						LogWarning("Receive callback exception:" + ex);
-					}
-				}
-			}
-		}
+            }
+        }
+    }
+    
+    public partial class NetPeer
+    {
+        private NetPeerStatus m_status = NetPeerStatus.NotRunning;
+        private Socket m_socket = null;
+        internal byte[] m_sendBuffer;
+        internal byte[] m_receiveBuffer;
+        internal NetIncomingMessage m_readHelperMessage;
+        private EndPoint m_senderRemote;
+        private object m_initializeLock = new object();
+        private uint m_frameCounter;
+        private double m_lastHeartbeat;
+        private double m_lastSocketBind = float.MinValue;
+        private NetUPnP m_upnp;
+        internal bool m_needFlushSendQueue;
 
-		private void BindSocket()
-		{
-			double now = NetTime.Now;
-			if (now - m_lastSocketBind < 1.0)
-			{
-				LogDebug("Suppressed socket rebind; last bound " + (now - m_lastSocketBind) + " seconds ago");
-				return; // only allow rebind once every second
-			}
-			m_lastSocketBind = now;
+        internal readonly NetPeerConfiguration m_configuration;
+        private readonly NetQueue<NetIncomingMessage> m_releasedIncomingMessages;
+        internal readonly NetQueue<NetTuple<NetEndPoint, NetOutgoingMessage>> m_unsentUnconnectedMessages;
 
-		    if (m_socket == null)
-		    {
-		        m_socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
-		    }
+        internal Dictionary<NetEndPoint, NetConnection> m_handshakes;
 
-		    lock (_peerSocketListLock)
-		    {
-		        if (peerSockets == null)
-		        {
-                    peerSockets = new Dictionary<Socket, NetPeer>();
-		        }
+        internal readonly NetPeerStatistics m_statistics;
+        internal long m_uniqueIdentifier;
+        internal bool m_executeFlushSendQueue;
 
-		        if (m_socket == null)
-		        {
-                    Console.WriteLine("socket is null error");
-		            throw new Exception("Socket failed to assign valid value for m_socket, null detected.");
-		        }
+        private AutoResetEvent m_messageReceivedEvent;
+        private List<NetTuple<SynchronizationContext, SendOrPostCallback>> m_receiveCallbacks;
 
-		        peerSockets.Add(m_socket, this);
-		    }
+        /// <summary>
+        /// Gets the socket, if Start() has been called
+        /// </summary>
+        public Socket Socket
+        {
+            get { return m_socket; }
+        }
 
-		    m_socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, (int)1);
+        /// <summary>
+        /// Call this to register a callback for when a new message arrives
+        /// </summary>
+        public void RegisterReceivedCallback(SendOrPostCallback callback, SynchronizationContext syncContext = null)
+        {
+            if (syncContext == null)
+                syncContext = SynchronizationContext.Current;
+            if (syncContext == null)
+                throw new NetException("Need a SynchronizationContext to register callback on correct thread!");
+            if (m_receiveCallbacks == null)
+                m_receiveCallbacks = new List<NetTuple<SynchronizationContext, SendOrPostCallback>>();
+            m_receiveCallbacks.Add(new NetTuple<SynchronizationContext, SendOrPostCallback>(syncContext, callback));
+        }
 
-			m_socket.ReceiveBufferSize = m_configuration.ReceiveBufferSize;
-			m_socket.SendBufferSize = m_configuration.SendBufferSize;
-			m_socket.Blocking = false;
+        /// <summary>
+        /// Call this to unregister a callback, but remember to do it in the same synchronization context!
+        /// </summary>
+        public void UnregisterReceivedCallback(SendOrPostCallback callback)
+        {
+            if (m_receiveCallbacks == null)
+                return;
 
-			var ep = (EndPoint)new NetEndPoint(m_configuration.LocalAddress, m_configuration.Port);
-			m_socket.Bind(ep);
+            // remove all callbacks regardless of sync context
+            m_receiveCallbacks.RemoveAll(tuple => tuple.Item2.Equals(callback));
 
-			// try catch only works on linux not osx
-			try
-			{
-				// this is not supported in mono / mac or linux yet.
-				if(Environment.OSVersion.Platform != PlatformID.Unix)
-				{
-					const uint IOC_IN = 0x80000000;
-					const uint IOC_VENDOR = 0x18000000;
-					uint SIO_UDP_CONNRESET = IOC_IN | IOC_VENDOR | 12;
-					m_socket.IOControl((int)SIO_UDP_CONNRESET, new byte[] { Convert.ToByte(false) }, null);
-				}
+            if (m_receiveCallbacks.Count < 1)
+                m_receiveCallbacks = null;
+        }
+
+        internal void ReleaseMessage(NetIncomingMessage msg)
+        {
+            NetException.Assert(msg.m_incomingMessageType != NetIncomingMessageType.Error);
+
+            if (msg.m_isFragment)
+            {
+                HandleReleasedFragment(msg);
+                return;
+            }
+
+            m_releasedIncomingMessages.Enqueue(msg);
+
+            if (m_messageReceivedEvent != null)
+                m_messageReceivedEvent.Set();
+
+            if (m_receiveCallbacks != null)
+            {
+                foreach (var tuple in m_receiveCallbacks)
+                {
+                    try
+                    {
+                        tuple.Item1.Post(tuple.Item2, this);
+                    }
+                    catch (Exception ex)
+                    {
+                        LogWarning("Receive callback exception:" + ex);
+                    }
+                }
+            }
+        }
+
+        private void BindSocket()
+        {
+            double now = NetTime.Now;
+            if (now - m_lastSocketBind < 1.0)
+            {
+                LogDebug("Suppressed socket rebind; last bound " + (now - m_lastSocketBind) + " seconds ago");
+                return; // only allow rebind once every second
+            }
+
+            m_lastSocketBind = now;
+
+            if (m_socket == null)
+            {
+                m_socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+            }
+            
+            // Register this peer to our manager
+            NetPeerManager.AddPeer(this);
+
+            m_socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, (int) 1);
+
+            m_socket.ReceiveBufferSize = m_configuration.ReceiveBufferSize;
+            m_socket.SendBufferSize = m_configuration.SendBufferSize;
+            m_socket.Blocking = false;
+
+            var ep = (EndPoint) new NetEndPoint(m_configuration.LocalAddress, m_configuration.Port);
+            m_socket.Bind(ep);
+
+            // try catch only works on linux not osx
+            try
+            {
+                // this is not supported in mono / mac or linux yet.
+                if (Environment.OSVersion.Platform != PlatformID.Unix)
+                {
+                    const uint IOC_IN = 0x80000000;
+                    const uint IOC_VENDOR = 0x18000000;
+                    uint SIO_UDP_CONNRESET = IOC_IN | IOC_VENDOR | 12;
+                    m_socket.IOControl((int) SIO_UDP_CONNRESET, new byte[] {Convert.ToByte(false)}, null);
+                }
                 else
                 {
                     LogDebug("Platform doesn't support SIO_UDP_CONNRESET");
                 }
-			}
-			catch (System.Exception e)
-			{
+            }
+            catch (System.Exception e)
+            {
                 LogDebug("Platform doesn't support SIO_UDP_CONNRESET");
-				// this will be thrown on linux but not mac if it doesn't exist.
-				// ignore; SIO_UDP_CONNRESET not supported on this platform
-			}
+                // this will be thrown on linux but not mac if it doesn't exist.
+                // ignore; SIO_UDP_CONNRESET not supported on this platform
+            }
 
-			var boundEp = m_socket.LocalEndPoint as NetEndPoint;
-			LogDebug("Socket bound to " + boundEp + ": " + m_socket.IsBound);
-			m_listenPort = boundEp.Port;
-		}
+            var boundEp = m_socket.LocalEndPoint as NetEndPoint;
+            LogDebug("Socket bound to " + boundEp + ": " + m_socket.IsBound);
+            m_listenPort = boundEp.Port;
+        }
 
-		private void InitializeNetwork()
-		{
-			lock (m_initializeLock)
-			{
-			    // make sure this is properly set up again, if required.
+        private void InitializeNetwork()
+        {
+            lock (m_initializeLock)
+            {
+                // make sure this is properly set up again, if required.
 
-			    m_configuration.Lock();
+                m_configuration.Lock();
 
-				if (m_status == NetPeerStatus.Running)
-					return;
+                if (m_status == NetPeerStatus.Running)
+                    return;
 
-				if (m_configuration.m_enableUPnP)
-					m_upnp = new NetUPnP(this);
+                if (m_configuration.m_enableUPnP)
+                    m_upnp = new NetUPnP(this);
 
-				InitializePools();
+                InitializePools();
 
-				m_releasedIncomingMessages.Clear();
-				m_unsentUnconnectedMessages.Clear();
-				m_handshakes.Clear();
+                m_releasedIncomingMessages.Clear();
+                m_unsentUnconnectedMessages.Clear();
+                m_handshakes.Clear();
 
-				// bind to socket
-				BindSocket();
+                // bind to socket
+                BindSocket();
 
-				m_receiveBuffer = new byte[m_configuration.ReceiveBufferSize];
-				m_sendBuffer = new byte[m_configuration.SendBufferSize];
-				m_readHelperMessage = new NetIncomingMessage(NetIncomingMessageType.Error);
-				m_readHelperMessage.m_data = m_receiveBuffer;
+                m_receiveBuffer = new byte[m_configuration.ReceiveBufferSize];
+                m_sendBuffer = new byte[m_configuration.SendBufferSize];
+                m_readHelperMessage = new NetIncomingMessage(NetIncomingMessageType.Error);
+                m_readHelperMessage.m_data = m_receiveBuffer;
 
-				byte[] macBytes = NetUtility.GetMacAddressBytes();
+                byte[] macBytes = NetUtility.GetMacAddressBytes();
 
-				var boundEp = m_socket.LocalEndPoint as NetEndPoint;
-				byte[] epBytes = BitConverter.GetBytes(boundEp.GetHashCode());
-				byte[] combined = new byte[epBytes.Length + macBytes.Length];
-				Array.Copy(epBytes, 0, combined, 0, epBytes.Length);
-				Array.Copy(macBytes, 0, combined, epBytes.Length, macBytes.Length);
-				m_uniqueIdentifier = BitConverter.ToInt64(NetUtility.ComputeSHAHash(combined), 0);
+                var boundEp = m_socket.LocalEndPoint as NetEndPoint;
+                byte[] epBytes = BitConverter.GetBytes(boundEp.GetHashCode());
+                byte[] combined = new byte[epBytes.Length + macBytes.Length];
+                Array.Copy(epBytes, 0, combined, 0, epBytes.Length);
+                Array.Copy(macBytes, 0, combined, epBytes.Length, macBytes.Length);
+                m_uniqueIdentifier = BitConverter.ToInt64(NetUtility.ComputeSHAHash(combined), 0);
 
-				m_status = NetPeerStatus.Running;
-			}
-		}
+                m_status = NetPeerStatus.Running;
+            }
+        }
 
-        /// <summary>
-        /// Network Update - called and executed singularly and only uses one thread for the application instance
-        /// </summary>
-		private void NetworkLoop()
-		{
-			VerifyNetworkThread();
-
-			LogDebug("Network thread started");
-		    bool shutdown_flag = false;
-
-		    do
-		    {
-		        try
-		        {
-		            shutdown_flag = NetworkUpdate();
-		            if (shutdown_flag)
-		            {
-                        Console.WriteLine("SHUTDOWN FLAG - called!");
-		            }
-		        }
-		        catch (Exception ex)
-		        {
-		            Console.WriteLine("net update exception: " + ex.ToString());
-		            LogWarning(ex.ToString());
-		        }
-		    } while (shutdown_flag == false);
-		    
-
-		    FullShutdown();
-		}
-
-	    private void FullShutdown()
-	    {
-	        lock (_networkThread)
-	        {
-	            // shutdown lidgren fully
-	            _networkThread = null;
-	        }
-
-	        lock (_peerSocketListLock)
-	        {
-                peerSockets = null;
-	        }
-
-            Console.WriteLine("Full shutdown!");
-	    }
-
-		private void ExecutePeerShutdown()
-		{
-			VerifyNetworkThread();
-
-		    Console.WriteLine("Network shutdown enter");
-
+        public void ExecutePeerShutdown()
+        {
+            Console.WriteLine("Network shutdown enter");
             // disconnect and make one final heartbeat
             var list = new List<NetConnection>(m_handshakes.Count + m_connections.Count);
-			lock (m_connections)
-			{
-				foreach (var conn in m_connections)
-					if (conn != null)
-						list.Add(conn);
-			}
+            lock (m_connections)
+            {
+                foreach (var conn in m_connections)
+                    if (conn != null)
+                        list.Add(conn);
+            }
 
-			lock (m_handshakes)
-			{
-				foreach (var hs in m_handshakes.Values)
-					if (hs != null && list.Contains(hs) == false)
-						list.Add(hs);
-			}
+            lock (m_handshakes)
+            {
+                foreach (var hs in m_handshakes.Values)
+                    if (hs != null && list.Contains(hs) == false)
+                        list.Add(hs);
+            }
 
-			// shut down connections
-			foreach (NetConnection conn in list)
-				conn.Shutdown(m_shutdownReason);
+            // shut down connections
+            foreach (NetConnection conn in list)
+                conn.Shutdown(m_shutdownReason);
 
-			FlushDelayedPackets();
+            FlushDelayedPackets();
 
             // one final heartbeat, will send stuff and do disconnect
             PeerUpdate();
 
-			NetUtility.Sleep(10);
+            NetUtility.Sleep(10);
 
-			lock (m_initializeLock)
-			{
-				try
-				{
-					if (m_socket != null)
-					{
-						// shutdown socket send and recieve handlers.
-						//m_socket.Shutdown(SocketShutdown.Both);
-						
-						// close connection, if present
-						m_socket.Close(2);
-					}
-				}
-				catch (Exception ex)
-				{
-				    LogDebug("socket shutdown method exception: " + ex.ToString());
-				    throw;
-				}
+            lock (m_initializeLock)
+            {
+                try
+                {
+                    if (m_socket != null)
+                    {
+                        // shutdown socket send and recieve handlers.
+                        //m_socket.Shutdown(SocketShutdown.Both);
+
+                        // close connection, if present
+                        m_socket.Close(2);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LogDebug("socket shutdown method exception: " + ex.ToString());
+                    throw;
+                }
                 finally
-				{
-				    if (m_socket != null)
-				    {
-				        lock (_peerSocketListLock)
-				        {
-				            peerSockets.Remove(m_socket);
-
-				            m_socket = null;
-				        }
-				        
-				    }
-
-				    // wake up any threads waiting for server shutdown
-					m_messageReceivedEvent?.Set();
+                {
+                    NetPeerManager.RemovePeer(this);
+                    // wake up any threads waiting for server shutdown
+                    m_messageReceivedEvent?.Set();
 
                     m_lastSocketBind = float.MinValue;
                     m_receiveBuffer = null;
@@ -370,24 +434,24 @@ namespace Lidgren.Network
                     LogDebug("Shutdown complete");
                     Console.WriteLine("Shutdown network peer properly");
                 }
-			}
+            }
 
-			return;
-		}
+            return;
+        }
 
-	    private void ProcessConnectionStateChanges()
-	    {
+        private void ProcessConnectionStateChanges()
+        {
+        }
 
-	    }
-
-	    private void FlushNetwork()
-	    {
-	        // update m_executeFlushSendQueue
-	        if (m_configuration.m_autoFlushSendQueue && m_needFlushSendQueue)
-	        {
-	            m_executeFlushSendQueue = true;
-	            m_needFlushSendQueue = false; // a race condition to this variable will simply result in a single superfluous call to FlushSendQueue()
-	        }
+        private void FlushNetwork()
+        {
+            // update m_executeFlushSendQueue
+            if (m_configuration.m_autoFlushSendQueue && m_needFlushSendQueue)
+            {
+                m_executeFlushSendQueue = true;
+                m_needFlushSendQueue =
+                    false; // a race condition to this variable will simply result in a single superfluous call to FlushSendQueue()
+            }
         }
 
 
@@ -397,24 +461,24 @@ namespace Lidgren.Network
         /// <param name="delta"></param>
         /// <param name="now"></param>
         /// <param name="maxConnectionHeartbeatsPerSecond"></param>
-	    private void ProcessHandshakes( double delta, double now, double maxConnectionHeartbeatsPerSecond)
-	    {
-	        // do handshake heartbeats
-	        if ((m_frameCounter % 3) == 0)
-	        {
-	            foreach (var kvp in m_handshakes)
-	            {
-	                NetConnection conn = kvp.Value as NetConnection;
-	                /*#if DEBUG
+        private void ProcessHandshakes(double delta, double now, double maxConnectionHeartbeatsPerSecond)
+        {
+            // do handshake heartbeats
+            if ((m_frameCounter % 3) == 0)
+            {
+                foreach (var kvp in m_handshakes)
+                {
+                    NetConnection conn = kvp.Value as NetConnection;
+                    /*#if DEBUG
                                             // sanity check
                                             if (kvp.Key != kvp.Key)
                                                 LogWarning("Sanity fail! Connection in handshake list under wrong key!");
                     #endif*/
-	                conn.UnconnectedHeartbeat(now);
-	                if (conn.m_status == NetConnectionStatus.Connected ||
-	                    conn.m_status == NetConnectionStatus.Disconnected)
-	                {
-	                    /*#if DEBUG
+                    conn.UnconnectedHeartbeat(now);
+                    if (conn.m_status == NetConnectionStatus.Connected ||
+                        conn.m_status == NetConnectionStatus.Disconnected)
+                    {
+                        /*#if DEBUG
                                                     // sanity check
                                                     if (conn.m_status == NetConnectionStatus.Disconnected && m_handshakes.ContainsKey(conn.RemoteEndPoint))
                                                     {
@@ -422,153 +486,95 @@ namespace Lidgren.Network
                                                         m_handshakes.Remove(conn.RemoteEndPoint);
                                                     }
                         #endif*/
-	                    break; // collection has been modified
-	                }
-	            }
-	        }
-	        
-	    }
-
-	    private void ProcessConnectionUpdates( double now )
-	    {
-	        // do connection heartbeats
-	        lock (m_connections)
-	        {
-	            for (int i = m_connections.Count - 1; i >= 0; i--)
-	            {
-	                var conn = m_connections[i];
-	                conn.Heartbeat(now, m_frameCounter);
-	                if (conn.m_status == NetConnectionStatus.Disconnected)
-	                {
-	                    //
-	                    // remove connection
-	                    //
-	                    m_connections.RemoveAt(i);
-	                    m_connectionLookup.Remove(conn.RemoteEndPoint);
-	                }
-	            }
-	        }
-	        m_executeFlushSendQueue = false;
-
-	        // send unsent unconnected messages
-	        NetTuple<NetEndPoint, NetOutgoingMessage> unsent;
-	        while (m_unsentUnconnectedMessages.TryDequeue(out unsent))
-	        {
-	            NetOutgoingMessage om = unsent.Item2;
-
-	            int len = om.Encode(m_sendBuffer, 0, 0);
-
-	            Interlocked.Decrement(ref om.m_recyclingCount);
-	            if (om.m_recyclingCount <= 0)
-	                Recycle(om);
-
-	            bool connReset;
-	            SendPacket(len, unsent.Item1, 1, out connReset);
-	        }
+                        break; // collection has been modified
+                    }
+                }
+            }
         }
 
-	    private void PeerUpdate()
-	    {
-            //LogDebug("peer-update");
-            int maxCHBpS = 1250;
-	        if (maxCHBpS < 250)
-	            maxCHBpS = 250;
-
-            double now = NetTime.Now;
-	        double delta = now - m_lastHeartbeat;
-	        m_frameCounter++;
-	        m_lastHeartbeat = now;
-
-	        if (delta > (1.0 / maxCHBpS) || delta < 0.0)
-	        {
-	            ProcessHandshakes(delta, now, maxCHBpS);
-	            FlushNetwork();
-	            ProcessConnectionUpdates(now);
-
-	            /*#if DEBUG
-                SendDelayedPackets();
-                #endif*/
-	        }
-
-	        m_upnp?.CheckForDiscoveryTimeout();
-        }
-        /// <summary>
-        /// Singular network update thread
-        /// This must be static, because otherwise people might try to use peer in a local thread context which is incorrect.
-        /// </summary>
-	    private static bool NetworkUpdate()
-		{
-			VerifyNetworkThread();
-
-		    List<NetPeer> netPeers = null;
-		    ArrayList sockets = null;
-		    Dictionary<Socket, NetPeer> copyDictionary = null;
-
-            lock (_peerSocketListLock)
+        private void ProcessConnectionUpdates(double now)
+        {
+            // do connection heartbeats
+            lock (m_connections)
             {
-                netPeers = peerSockets.Values.ToList();
-                sockets = new ArrayList(peerSockets.Keys);
-                peerSockets.Keys.ToArray();
-                copyDictionary = new Dictionary<Socket, NetPeer>(peerSockets);
+                for (int i = m_connections.Count - 1; i >= 0; i--)
+                {
+                    var conn = m_connections[i];
+                    conn.Heartbeat(now, m_frameCounter);
+                    if (conn.m_status == NetConnectionStatus.Disconnected)
+                    {
+                        //
+                        // remove connection
+                        //
+                        m_connections.RemoveAt(i);
+                        m_connectionLookup.Remove(conn.RemoteEndPoint);
+                    }
+                }
             }
 
-		    foreach (var peer in netPeers)
-		    {
-		        if (peer.m_status == NetPeerStatus.ShutdownRequested)
-		        {
-		            peer.LogDebug("shutdown-request-processing");
+            m_executeFlushSendQueue = false;
 
-		            try
-		            {
-		                // shutdown peer
-		                peer.ExecutePeerShutdown();
-                    }
-		            catch (Exception e)
-		            {
-		                Console.WriteLine(e);
-		                throw;
-		            }
+            // send unsent unconnected messages
+            NetTuple<NetEndPoint, NetOutgoingMessage> unsent;
+            while (m_unsentUnconnectedMessages.TryDequeue(out unsent))
+            {
+                NetOutgoingMessage om = unsent.Item2;
 
-		            return true;
-		        }
-		        else if (peer.m_status == NetPeerStatus.Running)
-		        {
-		            // update peer
-		            peer.PeerUpdate();
-		        }
-		    }
+                int len = om.Encode(m_sendBuffer, 0, 0);
 
-		    // no sockets to poll prep for exit condition
-		    if (netPeers.Count <= 0) return true;
-            
+                Interlocked.Decrement(ref om.m_recyclingCount);
+                if (om.m_recyclingCount <= 0)
+                    Recycle(om);
 
-		    Socket.Select(sockets, null, null, 500);
+                bool connReset;
+                SendPacket(len, unsent.Item1, 1, out connReset);
+            }
+        }
 
-		    foreach (var socket in sockets)
-		    {
-		        SocketDataHandler(copyDictionary[(System.Net.Sockets.Socket)socket]);
-		    }
-		    
-            // no shutdown 
-		    return false;
-		}
+
+        public void PeerUpdate()
+        {
+            int maxCHBpS = 1250;
+            if (maxCHBpS < 250)
+                maxCHBpS = 250;
+
+            double now = NetTime.Now;
+            double delta = now - m_lastHeartbeat;
+            m_frameCounter++;
+            m_lastHeartbeat = now;
+
+            if (delta > (1.0 / maxCHBpS) || delta < 0.0)
+            {
+                ProcessHandshakes(delta, now, maxCHBpS);
+                FlushNetwork();
+                ProcessConnectionUpdates(now);
+
+                /*#if DEBUG
+                SendDelayedPackets();
+                #endif*/
+            }
+
+            m_upnp?.CheckForDiscoveryTimeout();
+        }
+
 
         /// <summary>
         /// Called when the socket has data to process
         /// </summary>
         /// <param name="now"></param>
         /// <param name="peer"></param>
-	    protected static void SocketDataHandler( NetPeer peer)
-	    {
+        public void SocketDataHandler()
+        {
             // retrieve new now time
-	        double now = NetTime.Now;
+            double now = NetTime.Now;
 
             do
             {
                 int bytesReceived = 0;
                 try
                 {
-                    bytesReceived = peer.m_socket.ReceiveFrom(peer.m_receiveBuffer, 0, peer.m_receiveBuffer.Length, SocketFlags.None, ref peer.m_senderRemote);
+                    bytesReceived = m_socket.ReceiveFrom(m_receiveBuffer, 0, m_receiveBuffer.Length,
+                        SocketFlags.None, ref m_senderRemote);
                 }
                 catch (SocketException sx)
                 {
@@ -578,44 +584,44 @@ namespace Lidgren.Network
                             // connection reset by peer, aka connection forcibly closed aka "ICMP port unreachable"
                             // we should shut down the connection; but m_senderRemote seemingly cannot be trusted, so which connection should we shut down?!
                             // So, what to do?
-                            peer.LogWarning("ConnectionReset");
+                            LogWarning("ConnectionReset");
                             return;
 
                         case SocketError.NotConnected:
                             // socket is unbound; try to rebind it (happens on mobile when process goes to sleep)
-                            peer.BindSocket();
+                            BindSocket();
                             return;
 
                         default:
-                            peer.LogWarning("Socket exception: " + sx.ToString());
+                            LogWarning("Socket exception: " + sx.ToString());
                             return;
                     }
                 }
 
                 if (bytesReceived < NetConstants.HeaderByteSize)
+                {
                     return;
-
+                }
                 //LogVerbose("Received " + bytesReceived + " bytes");
 
-                var ipsender = (NetEndPoint)peer.m_senderRemote;
+                var ipsender = (NetEndPoint) m_senderRemote;
 
-                if (peer.m_upnp != null && now < peer.m_upnp.m_discoveryResponseDeadline && bytesReceived > 32)
+                if (m_upnp != null && now < m_upnp.m_discoveryResponseDeadline && bytesReceived > 32)
                 {
                     // is this an UPnP response?
-                    string resp = System.Text.Encoding.UTF8.GetString(peer.m_receiveBuffer, 0, bytesReceived);
+                    string resp = System.Text.Encoding.UTF8.GetString(m_receiveBuffer, 0, bytesReceived);
                     if (resp.Contains("upnp:rootdevice") || resp.Contains("UPnP/1.0"))
                     {
                         try
                         {
                             resp = resp.Substring(resp.ToLower().IndexOf("location:") + 9);
                             resp = resp.Substring(0, resp.IndexOf("\r")).Trim();
-                            peer.m_upnp.ExtractServiceUrl(resp);
+                            m_upnp.ExtractServiceUrl(resp);
                             return;
                         }
                         catch (Exception ex)
                         {
-                            peer.LogDebug("Failed to parse UPnP response: " + ex.ToString());
-
+                            LogDebug("Failed to parse UPnP response: " + ex.ToString());
                             // don't try to parse this packet further
                             return;
                         }
@@ -623,7 +629,7 @@ namespace Lidgren.Network
                 }
 
                 NetConnection sender = null;
-                peer.m_connectionLookup.TryGetValue(ipsender, out sender);
+                m_connectionLookup.TryGetValue(ipsender, out sender);
 
                 //
                 // parse packet into messages
@@ -641,29 +647,30 @@ namespace Lidgren.Network
 
                     numMessages++;
 
-                    NetMessageType tp = (NetMessageType)peer.m_receiveBuffer[ptr++];
+                    NetMessageType tp = (NetMessageType) m_receiveBuffer[ptr++];
 
-                    byte low = peer.m_receiveBuffer[ptr++];
-                    byte high = peer.m_receiveBuffer[ptr++];
+                    byte low = m_receiveBuffer[ptr++];
+                    byte high = m_receiveBuffer[ptr++];
 
                     bool isFragment = ((low & 1) == 1);
-                    ushort sequenceNumber = (ushort)((low >> 1) | (((int)high) << 7));
+                    ushort sequenceNumber = (ushort) ((low >> 1) | (((int) high) << 7));
 
                     if (isFragment)
                         numFragments++;
 
-                    ushort payloadBitLength = (ushort)(peer.m_receiveBuffer[ptr++] | (peer.m_receiveBuffer[ptr++] << 8));
+                    ushort payloadBitLength = (ushort) (m_receiveBuffer[ptr++] | (m_receiveBuffer[ptr++] << 8));
                     int payloadByteLength = NetUtility.BytesToHoldBits(payloadBitLength);
 
                     if (bytesReceived - ptr < payloadByteLength)
                     {
-                        peer.LogWarning("Malformed packet; stated payload length " + payloadByteLength + ", remaining bytes " + (bytesReceived - ptr));
+                        LogWarning("Malformed packet; stated payload length " + payloadByteLength +
+                                   ", remaining bytes " + (bytesReceived - ptr));
                         return;
                     }
 
                     if (tp >= NetMessageType.Unused1 && tp <= NetMessageType.Unused29)
                     {
-                        peer.ThrowOrLog("Unexpected NetMessageType: " + tp);
+                        ThrowOrLog("Unexpected NetMessageType: " + tp);
                         return;
                     }
 
@@ -674,14 +681,18 @@ namespace Lidgren.Network
                             if (sender != null)
                                 sender.ReceivedLibraryMessage(tp, ptr, payloadByteLength);
                             else
-                                peer.ReceivedUnconnectedLibraryMessage(now, ipsender, tp, ptr, payloadByteLength);
+                                ReceivedUnconnectedLibraryMessage(now, ipsender, tp, ptr, payloadByteLength);
                         }
                         else
                         {
-                            if (sender == null && !peer.m_configuration.IsMessageTypeEnabled(NetIncomingMessageType.UnconnectedData))
+                            if (sender == null &&
+                                !m_configuration.IsMessageTypeEnabled(NetIncomingMessageType.UnconnectedData))
+                            {
                                 return; // dropping unconnected message since it's not enabled
+                            }
 
-                            NetIncomingMessage msg = peer.CreateIncomingMessage(NetIncomingMessageType.Data, payloadByteLength);
+                            NetIncomingMessage msg =
+                                CreateIncomingMessage(NetIncomingMessageType.Data, payloadByteLength);
                             msg.m_isFragment = isFragment;
                             msg.m_receiveTime = now;
                             msg.m_sequenceNumber = sequenceNumber;
@@ -690,14 +701,14 @@ namespace Lidgren.Network
                             msg.m_senderEndPoint = ipsender;
                             msg.m_bitLength = payloadBitLength;
 
-                            Buffer.BlockCopy(peer.m_receiveBuffer, ptr, msg.m_data, 0, payloadByteLength);
+                            Buffer.BlockCopy(m_receiveBuffer, ptr, msg.m_data, 0, payloadByteLength);
                             if (sender != null)
                             {
                                 if (tp == NetMessageType.Unconnected)
                                 {
                                     // We're connected; but we can still send unconnected messages to this peer
                                     msg.m_incomingMessageType = NetIncomingMessageType.UnconnectedData;
-                                    peer.ReleaseMessage(msg);
+                                    ReleaseMessage(msg);
                                 }
                                 else
                                 {
@@ -710,203 +721,199 @@ namespace Lidgren.Network
                                 // at this point we know the message type is enabled
                                 // unconnected application (non-library) message
                                 msg.m_incomingMessageType = NetIncomingMessageType.UnconnectedData;
-                                peer.ReleaseMessage(msg);
+                                ReleaseMessage(msg);
                             }
                         }
                     }
                     catch (Exception ex)
                     {
-                        peer.LogError("Packet parsing error: " + ex.Message + " from " + ipsender);
+                        LogError("Packet parsing error: " + ex.Message + " from " + ipsender);
                     }
+
                     ptr += payloadByteLength;
                 }
 
-                peer.m_statistics.PacketReceived(bytesReceived, numMessages, numFragments);
+                m_statistics.PacketReceived(bytesReceived, numMessages, numFragments);
                 if (sender != null)
                     sender.m_statistics.PacketReceived(bytesReceived, numMessages, numFragments);
-
-            } while (peer.m_socket.Available > 0);
+            } while (m_socket.Available > 0);
         }
 
-		/// <summary>
-		/// If NetPeerConfiguration.AutoFlushSendQueue() is false; you need to call this to send all messages queued using SendMessage()
-		/// </summary>
-		public void FlushSendQueue()
-		{
-			m_executeFlushSendQueue = true;
-		}
+        /// <summary>
+        /// If NetPeerConfiguration.AutoFlushSendQueue() is false; you need to call this to send all messages queued using SendMessage()
+        /// </summary>
+        public void FlushSendQueue()
+        {
+            m_executeFlushSendQueue = true;
+        }
 
-		internal void HandleIncomingDiscoveryRequest(double now, NetEndPoint senderEndPoint, int ptr, int payloadByteLength)
-		{
-			if (m_configuration.IsMessageTypeEnabled(NetIncomingMessageType.DiscoveryRequest))
-			{
-				NetIncomingMessage dm = CreateIncomingMessage(NetIncomingMessageType.DiscoveryRequest, payloadByteLength);
-				if (payloadByteLength > 0)
-					Buffer.BlockCopy(m_receiveBuffer, ptr, dm.m_data, 0, payloadByteLength);
-				dm.m_receiveTime = now;
-				dm.m_bitLength = payloadByteLength * 8;
-				dm.m_senderEndPoint = senderEndPoint;
-				ReleaseMessage(dm);
-			}
-		}
+        internal void HandleIncomingDiscoveryRequest(double now, NetEndPoint senderEndPoint, int ptr,
+            int payloadByteLength)
+        {
+            if (m_configuration.IsMessageTypeEnabled(NetIncomingMessageType.DiscoveryRequest))
+            {
+                NetIncomingMessage dm =
+                    CreateIncomingMessage(NetIncomingMessageType.DiscoveryRequest, payloadByteLength);
+                if (payloadByteLength > 0)
+                    Buffer.BlockCopy(m_receiveBuffer, ptr, dm.m_data, 0, payloadByteLength);
+                dm.m_receiveTime = now;
+                dm.m_bitLength = payloadByteLength * 8;
+                dm.m_senderEndPoint = senderEndPoint;
+                ReleaseMessage(dm);
+            }
+        }
 
-		internal void HandleIncomingDiscoveryResponse(double now, NetEndPoint senderEndPoint, int ptr, int payloadByteLength)
-		{
-			if (m_configuration.IsMessageTypeEnabled(NetIncomingMessageType.DiscoveryResponse))
-			{
-				NetIncomingMessage dr = CreateIncomingMessage(NetIncomingMessageType.DiscoveryResponse, payloadByteLength);
-				if (payloadByteLength > 0)
-					Buffer.BlockCopy(m_receiveBuffer, ptr, dr.m_data, 0, payloadByteLength);
-				dr.m_receiveTime = now;
-				dr.m_bitLength = payloadByteLength * 8;
-				dr.m_senderEndPoint = senderEndPoint;
-				ReleaseMessage(dr);
-			}
-		}
+        internal void HandleIncomingDiscoveryResponse(double now, NetEndPoint senderEndPoint, int ptr,
+            int payloadByteLength)
+        {
+            if (m_configuration.IsMessageTypeEnabled(NetIncomingMessageType.DiscoveryResponse))
+            {
+                NetIncomingMessage dr =
+                    CreateIncomingMessage(NetIncomingMessageType.DiscoveryResponse, payloadByteLength);
+                if (payloadByteLength > 0)
+                    Buffer.BlockCopy(m_receiveBuffer, ptr, dr.m_data, 0, payloadByteLength);
+                dr.m_receiveTime = now;
+                dr.m_bitLength = payloadByteLength * 8;
+                dr.m_senderEndPoint = senderEndPoint;
+                ReleaseMessage(dr);
+            }
+        }
 
-		private void ReceivedUnconnectedLibraryMessage(double now, NetEndPoint senderEndPoint, NetMessageType tp, int ptr, int payloadByteLength)
-		{
-			NetConnection shake;
-			if (m_handshakes.TryGetValue(senderEndPoint, out shake))
-			{
-				shake.ReceivedHandshake(now, tp, ptr, payloadByteLength);
-				return;
-			}
+        private void ReceivedUnconnectedLibraryMessage(double now, NetEndPoint senderEndPoint, NetMessageType tp,
+            int ptr, int payloadByteLength)
+        {
+            NetConnection shake;
+            if (m_handshakes.TryGetValue(senderEndPoint, out shake))
+            {
+                shake.ReceivedHandshake(now, tp, ptr, payloadByteLength);
+                return;
+            }
 
-			//
-			// Library message from a completely unknown sender; lets just accept Connect
-			//
-			switch (tp)
-			{
-				case NetMessageType.Discovery:
-					HandleIncomingDiscoveryRequest(now, senderEndPoint, ptr, payloadByteLength);
-					return;
-				case NetMessageType.DiscoveryResponse:
-					HandleIncomingDiscoveryResponse(now, senderEndPoint, ptr, payloadByteLength);
-					return;
-				case NetMessageType.NatIntroduction:
-					if (m_configuration.IsMessageTypeEnabled(NetIncomingMessageType.NatIntroductionSuccess))
-						HandleNatIntroduction(ptr);
-					return;
-				case NetMessageType.NatPunchMessage:
-					if (m_configuration.IsMessageTypeEnabled(NetIncomingMessageType.NatIntroductionSuccess))
-						HandleNatPunch(ptr, senderEndPoint);
-					return;
-				case NetMessageType.NatIntroductionConfirmRequest:
-					if (m_configuration.IsMessageTypeEnabled(NetIncomingMessageType.NatIntroductionSuccess))
-						HandleNatPunchConfirmRequest(ptr, senderEndPoint);
-					return;
-				case NetMessageType.NatIntroductionConfirmed:
-					if (m_configuration.IsMessageTypeEnabled(NetIncomingMessageType.NatIntroductionSuccess))
-						HandleNatPunchConfirmed(ptr, senderEndPoint);
-					return;
-				case NetMessageType.ConnectResponse:
+            //
+            // Library message from a completely unknown sender; lets just accept Connect
+            //
+            switch (tp)
+            {
+                case NetMessageType.Discovery:
+                    HandleIncomingDiscoveryRequest(now, senderEndPoint, ptr, payloadByteLength);
+                    return;
+                case NetMessageType.DiscoveryResponse:
+                    HandleIncomingDiscoveryResponse(now, senderEndPoint, ptr, payloadByteLength);
+                    return;
+                case NetMessageType.NatIntroduction:
+                    if (m_configuration.IsMessageTypeEnabled(NetIncomingMessageType.NatIntroductionSuccess))
+                        HandleNatIntroduction(ptr);
+                    return;
+                case NetMessageType.NatPunchMessage:
+                    if (m_configuration.IsMessageTypeEnabled(NetIncomingMessageType.NatIntroductionSuccess))
+                        HandleNatPunch(ptr, senderEndPoint);
+                    return;
+                case NetMessageType.NatIntroductionConfirmRequest:
+                    if (m_configuration.IsMessageTypeEnabled(NetIncomingMessageType.NatIntroductionSuccess))
+                        HandleNatPunchConfirmRequest(ptr, senderEndPoint);
+                    return;
+                case NetMessageType.NatIntroductionConfirmed:
+                    if (m_configuration.IsMessageTypeEnabled(NetIncomingMessageType.NatIntroductionSuccess))
+                        HandleNatPunchConfirmed(ptr, senderEndPoint);
+                    return;
+                case NetMessageType.ConnectResponse:
 
-					lock (m_handshakes)
-					{
-						foreach (var hs in m_handshakes)
-						{
-							if (hs.Key.Address.Equals(senderEndPoint.Address))
-							{
-								if (hs.Value.m_connectionInitiator)
-								{
-									//
-									// We are currently trying to connection to XX.XX.XX.XX:Y
-									// ... but we just received a ConnectResponse from XX.XX.XX.XX:Z
-									// Lets just assume the router decided to use this port instead
-									//
-									var hsconn = hs.Value;
-									m_connectionLookup.Remove(hs.Key);
-									m_handshakes.Remove(hs.Key);
+                    lock (m_handshakes)
+                    {
+                        foreach (var hs in m_handshakes)
+                        {
+                            if (hs.Key.Address.Equals(senderEndPoint.Address))
+                            {
+                                if (hs.Value.m_connectionInitiator)
+                                {
+                                    //
+                                    // We are currently trying to connection to XX.XX.XX.XX:Y
+                                    // ... but we just received a ConnectResponse from XX.XX.XX.XX:Z
+                                    // Lets just assume the router decided to use this port instead
+                                    //
+                                    var hsconn = hs.Value;
+                                    m_connectionLookup.Remove(hs.Key);
+                                    m_handshakes.Remove(hs.Key);
 
-									LogDebug("Detected host port change; rerouting connection to " + senderEndPoint);
-									hsconn.MutateEndPoint(senderEndPoint);
+                                    LogDebug("Detected host port change; rerouting connection to " +
+                                             senderEndPoint);
+                                    hsconn.MutateEndPoint(senderEndPoint);
 
-									m_connectionLookup.Add(senderEndPoint, hsconn);
-									m_handshakes.Add(senderEndPoint, hsconn);
+                                    m_connectionLookup.Add(senderEndPoint, hsconn);
+                                    m_handshakes.Add(senderEndPoint, hsconn);
 
-									hsconn.ReceivedHandshake(now, tp, ptr, payloadByteLength);
-									return;
-								}
-							}
-						}
-					}
+                                    hsconn.ReceivedHandshake(now, tp, ptr, payloadByteLength);
+                                    return;
+                                }
+                            }
+                        }
+                    }
 
-					LogWarning("Received unhandled library message " + tp + " from " + senderEndPoint);
-					return;
-				case NetMessageType.Connect:
-					if (m_configuration.AcceptIncomingConnections == false)
-					{
-						LogWarning("Received Connect, but we're not accepting incoming connections!");
-						return;
-					}
-					// handle connect
-					// It's someone wanting to shake hands with us!
+                    LogWarning("Received unhandled library message " + tp + " from " + senderEndPoint);
+                    return;
+                case NetMessageType.Connect:
+                    if (m_configuration.AcceptIncomingConnections == false)
+                    {
+                        LogWarning("Received Connect, but we're not accepting incoming connections!");
+                        return;
+                    }
+                    // handle connect
+                    // It's someone wanting to shake hands with us!
 
-					int reservedSlots = m_handshakes.Count + m_connections.Count;
-					if (reservedSlots >= m_configuration.m_maximumConnections)
-					{
-						// server full
-						NetOutgoingMessage full = CreateMessage("Server full");
-						full.m_messageType = NetMessageType.Disconnect;
-						SendLibrary(full, senderEndPoint);
-						return;
-					}
+                    int reservedSlots = m_handshakes.Count + m_connections.Count;
+                    if (reservedSlots >= m_configuration.m_maximumConnections)
+                    {
+                        // server full
+                        NetOutgoingMessage full = CreateMessage("Server full");
+                        full.m_messageType = NetMessageType.Disconnect;
+                        SendLibrary(full, senderEndPoint);
+                        return;
+                    }
 
-					// Ok, start handshake!
-					NetConnection conn = new NetConnection(this, senderEndPoint);
-					conn.m_status = NetConnectionStatus.ReceivedInitiation;
-					m_handshakes.Add(senderEndPoint, conn);
-					conn.ReceivedHandshake(now, tp, ptr, payloadByteLength);
-					return;
+                    // Ok, start handshake!
+                    NetConnection conn = new NetConnection(this, senderEndPoint);
+                    conn.m_status = NetConnectionStatus.ReceivedInitiation;
+                    m_handshakes.Add(senderEndPoint, conn);
+                    conn.ReceivedHandshake(now, tp, ptr, payloadByteLength);
+                    return;
 
-				case NetMessageType.Disconnect:
-					// this is probably ok
-					LogVerbose("Received Disconnect from unconnected source: " + senderEndPoint);
-					return;
-				default:
-					LogWarning("Received unhandled library message " + tp + " from " + senderEndPoint);
-					return;
-			}
-		}
+                case NetMessageType.Disconnect:
+                    // this is probably ok
+                    LogVerbose("Received Disconnect from unconnected source: " + senderEndPoint);
+                    return;
+                default:
+                    LogWarning("Received unhandled library message " + tp + " from " + senderEndPoint);
+                    return;
+            }
+        }
 
-		internal void AcceptConnection(NetConnection conn)
-		{
-			// LogDebug("Accepted connection " + conn);
-			conn.InitExpandMTU(NetTime.Now);
+        internal void AcceptConnection(NetConnection conn)
+        {
+            // LogDebug("Accepted connection " + conn);
+            conn.InitExpandMTU(NetTime.Now);
 
-			if (m_handshakes.Remove(conn.m_remoteEndPoint) == false)
-				LogWarning("AcceptConnection called but m_handshakes did not contain it!");
+            if (m_handshakes.Remove(conn.m_remoteEndPoint) == false)
+                LogWarning("AcceptConnection called but m_handshakes did not contain it!");
 
-			lock (m_connections)
-			{
-				if (m_connections.Contains(conn))
-				{
-					LogWarning("AcceptConnection called but m_connection already contains it!");
-				}
-				else
-				{
-					m_connections.Add(conn);
-					m_connectionLookup.Add(conn.m_remoteEndPoint, conn);
-				}
-			}
-		}
+            lock (m_connections)
+            {
+                if (m_connections.Contains(conn))
+                {
+                    LogWarning("AcceptConnection called but m_connection already contains it!");
+                }
+                else
+                {
+                    m_connections.Add(conn);
+                    m_connectionLookup.Add(conn.m_remoteEndPoint, conn);
+                }
+            }
+        }
 
-		[Conditional("DEBUG")]
-		internal static void VerifyNetworkThread()
-		{
-			Thread ct = Thread.CurrentThread;
-			if (Thread.CurrentThread != _networkThread)
-				throw new NetException("Executing on wrong thread! Should be library system thread (is " + ct.Name + " mId " + ct.ManagedThreadId + ")");
-		}
-
-		internal NetIncomingMessage SetupReadHelperMessage(int ptr, int payloadLength)
-		{
-			VerifyNetworkThread();
-
-			m_readHelperMessage.m_bitLength = (ptr + payloadLength) * 8;
-			m_readHelperMessage.m_readPosition = (ptr * 8);
-			return m_readHelperMessage;
-		}
-	}
+        internal NetIncomingMessage SetupReadHelperMessage(int ptr, int payloadLength)
+        {
+            m_readHelperMessage.m_bitLength = (ptr + payloadLength) * 8;
+            m_readHelperMessage.m_readPosition = (ptr * 8);
+            return m_readHelperMessage;
+        }
+    }
 }

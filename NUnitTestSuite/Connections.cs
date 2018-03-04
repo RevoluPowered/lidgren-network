@@ -38,6 +38,7 @@ namespace NUnitTestSuite
         [Test, Repeat(5)]
         public void NetworkServerInitTest()
         {
+            NetPeerManager.StartNetworkThread();
             var server = StartServer();
 
             Assert.That(() => server.Status, Is.EqualTo(NetPeerStatus.Running).After(4).Seconds.PollEvery(100));
@@ -45,6 +46,7 @@ namespace NUnitTestSuite
             StopServer(server);
             
             Assert.That(() => server.Status, Is.EqualTo(NetPeerStatus.NotRunning).After(4).Seconds.PollEvery(100));
+            NetPeerManager.WaitForExit();
         }
 
 
@@ -53,6 +55,7 @@ namespace NUnitTestSuite
         [Test, Repeat(5)]
         public void NetworkClientInitTest()
         {
+            NetPeerManager.StartNetworkThread();
             InitTestContext();
             var client = new TestClient();
             
@@ -61,6 +64,7 @@ namespace NUnitTestSuite
             client.StopClient();
 
             Assert.That(() => client.NetClient.Status, Is.EqualTo(NetPeerStatus.NotRunning).After(4).Seconds.PollEvery(50));
+            NetPeerManager.WaitForExit();
         }
 
         public bool ConnectionStatusHandler( string context, NetIncomingMessage message )
@@ -121,8 +125,6 @@ namespace NUnitTestSuite
                 TestContext.Out.WriteLine("Stopping server");
                 StopServer(server);
 
-                // wait for network thread to exit
-                server.WaitForExit();
             }
         }
         
@@ -135,8 +137,9 @@ namespace NUnitTestSuite
         {
             InitTestContext();
             TestContext.Out.WriteLine("-----------------------------------------------------------");
+            NetPeerManager.StartNetworkThread();
             Thread serverThread = new Thread(ServerThread);
-
+            
             serverThread.Start();
 
             var clients = new List<TestClient>(1000);
@@ -152,14 +155,8 @@ namespace NUnitTestSuite
                 client.DoConnectTest();
             }
 
-
-            foreach (var client in clients)
-            {
-                client.NetClient.WaitForExit();
-            }
-            
-            // join for 5 seconds
-            serverThread.Join(5);
+            serverThread.Join();
+            NetPeerManager.WaitForExit();
         }
     }
 }

@@ -150,9 +150,7 @@ namespace Lidgren.Network
 
 		internal void Heartbeat(double now, uint frameCounter)
 		{
-			NetPeer.VerifyNetworkThread();
-
-			NetException.Assert(m_status != NetConnectionStatus.InitiatedConnect && m_status != NetConnectionStatus.RespondedConnect);
+		    NetException.Assert(m_status != NetConnectionStatus.InitiatedConnect && m_status != NetConnectionStatus.RespondedConnect);
 
 			if ((frameCounter % m_infrequentEventsSkipFrames) == 0)
 			{
@@ -280,8 +278,7 @@ namespace Lidgren.Network
 			//
 			if (m_sendBufferWritePtr > 0)
 			{
-				NetPeer.VerifyNetworkThread();
-				NetException.Assert(m_sendBufferWritePtr > 0 && m_sendBufferNumMessages > 0);
+			    NetException.Assert(m_sendBufferWritePtr > 0 && m_sendBufferNumMessages > 0);
 				m_peer.SendPacket(m_sendBufferWritePtr, m_remoteEndPoint, m_sendBufferNumMessages, out connectionReset);
 				m_statistics.PacketSent(m_sendBufferWritePtr, m_sendBufferNumMessages);
 				m_sendBufferWritePtr = 0;
@@ -293,9 +290,7 @@ namespace Lidgren.Network
 		// This method is called from the ISenderChannels
 		internal void QueueSendMessage(NetOutgoingMessage om, int seqNr)
 		{
-			NetPeer.VerifyNetworkThread();
-
-			int sz = om.GetEncodedSize();
+		    int sz = om.GetEncodedSize();
 			//if (sz > m_currentMTU)
 			//	m_peer.LogWarning("Message larger than MTU! Fragmentation must have failed!");
 
@@ -410,9 +405,7 @@ namespace Lidgren.Network
 		// received a library message while Connected
 		internal void ReceivedLibraryMessage(NetMessageType tp, int ptr, int payloadLength)
 		{
-			NetPeer.VerifyNetworkThread();
-
-			double now = NetTime.Now;
+		    double now = NetTime.Now;
 
 			switch (tp)
 			{
@@ -487,9 +480,7 @@ namespace Lidgren.Network
 
 		internal void ReceivedMessage(NetIncomingMessage msg)
 		{
-			NetPeer.VerifyNetworkThread();
-
-			NetMessageType tp = msg.m_receivedMessageType;
+		    NetMessageType tp = msg.m_receivedMessageType;
 
 			int channelSlot = (int)tp - 1;
 			NetReceiverChannelBase chan = m_receiveChannels[channelSlot];
@@ -501,9 +492,7 @@ namespace Lidgren.Network
 
 		private NetReceiverChannelBase CreateReceiverChannel(NetMessageType tp)
 		{
-			NetPeer.VerifyNetworkThread();
-
-			// create receiver channel
+		    // create receiver channel
 			NetReceiverChannelBase chan;
 			NetDeliveryMethod method = NetUtility.GetDeliveryMethod(tp);
 			switch (method)

@@ -49,9 +49,7 @@ namespace Lidgren.Network
 		/// </summary>
 		internal void HandleNatIntroduction(int ptr)
 		{
-			VerifyNetworkThread();
-
-			// read intro
+		    // read intro
 			NetIncomingMessage tmp = SetupReadHelperMessage(ptr, 1000); // never mind length
 
 			byte hostByte = tmp.ReadByte();

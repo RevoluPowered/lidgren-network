@@ -125,31 +125,8 @@ namespace Lidgren.Network
 			m_receivedFragmentGroups = new Dictionary<NetConnection, Dictionary<int, ReceivedFragmentGroup>>();	
 		}
 
+        
 
-	    internal object NetworkLock = true;
-	    internal void StartNetworkThread()
-	    {
-	        lock (NetworkLock)
-	        {
-	            // thread shutdown behaviour is, it will shut down when netpeer's have been shut down, if it suddenly gets a new netpeer to work with
-	            // it initialises a new thread for it to use
-	            // if the thread has died, or the thread hasn't been started, overwrite it.
-	            if (_networkThread == null || _networkThread.IsAlive == false)
-	            {
-	                // extra alloc, just in case it's a dead thread
-	                _networkThread = null;
-
-	                // start network thread
-	                _networkThread = new Thread(NetworkLoop)
-	                {
-	                    Name = "Lidgren.Network Thread"
-	                };
-
-	                //m_networkThread.IsBackground = true;
-	                _networkThread.Start();
-	            }
-            }
-	    }
 
 		/// <summary>
 		/// Binds to socket and spawns the networking thread
@@ -173,11 +150,6 @@ namespace Lidgren.Network
 			}*/
 
 			InitializeNetwork();
-
-            // Message processing for network thread is only executed in a single network thread instance
-            // this is for when you are hosting many different NetPeer's to lower the CPU usage
-            // also it means we can use Socket.Select instead of Socket.Poll
-            StartNetworkThread();
 
 		    // send upnp discovery
 			m_upnp?.Discover(this);
@@ -275,8 +247,7 @@ namespace Lidgren.Network
 		// send message immediately and recycle it
 		internal void SendLibrary(NetOutgoingMessage msg, NetEndPoint recipient)
 		{
-			VerifyNetworkThread();
-			NetException.Assert(msg.m_isSent == false);
+		    NetException.Assert(msg.m_isSent == false);
 
 			bool connReset;
 			int len = msg.Encode(m_sendBuffer, 0, 0);
@@ -404,16 +375,7 @@ namespace Lidgren.Network
 
 			LogDebug("Shutdown requested");
 			m_shutdownReason = bye;
-			m_status = NetPeerStatus.ShutdownRequested;
-
-		    lock (_peerSocketListLock)
-		    {
-		        if (peerSockets != null && peerSockets.Count == 1)
-		        {
-		            // wait for this thread to exit before terminating the thread abruptly
-		            //GetNetworkThread().Join();
-		        }
-		    }
-        }
+		    m_status = NetPeerStatus.ShutdownRequested;
+		}
 	}
 }

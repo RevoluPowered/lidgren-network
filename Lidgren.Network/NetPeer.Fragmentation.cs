@@ -81,9 +81,7 @@ namespace Lidgren.Network
 
 		private void HandleReleasedFragment(NetIncomingMessage im)
 		{
-			VerifyNetworkThread();
-
-			//
+		    //
 			// read fragmentation header and combine fragments
 			//
 			int group;

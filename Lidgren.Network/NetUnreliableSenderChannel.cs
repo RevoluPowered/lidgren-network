@@ -83,9 +83,7 @@ namespace Lidgren.Network
 
 		private void ExecuteSend(NetOutgoingMessage message)
 		{
-		    NetPeer.VerifyNetworkThread();
-
-            int seqNr = m_sendStart;
+		    int seqNr = m_sendStart;
 			m_sendStart = (m_sendStart + 1) % NetConstants.NumSequenceNumbers;
 
 			m_connection.QueueSendMessage(message, seqNr);

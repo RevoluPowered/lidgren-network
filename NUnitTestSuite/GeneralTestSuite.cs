@@ -22,6 +22,7 @@ namespace NUnitTestSuite
         [Test, MaxTime(30000), Repeat(5)]
         public void GenericTestSuite()
         {
+            NetPeerManager.StartNetworkThread();
             NetPeerConfiguration config = new NetPeerConfiguration("oldUnitTests");
             config.EnableUPnP = true;
             NetPeer peer = new NetPeer(config);
@@ -74,6 +75,7 @@ namespace NUnitTestSuite
 
             TestContext.Out.WriteLine("Completed Generic Test Suite");
             TestContext.Out.WriteLine("----------------------------");
+            NetPeerManager.WaitForExit();
         }
     }
 }
