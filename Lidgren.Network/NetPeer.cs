@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Threading;
 using System.Collections.Generic;
 using System.Net;
@@ -119,7 +120,6 @@ namespace Lidgren.Network
 			m_unsentUnconnectedMessages = new NetQueue<NetTuple<NetEndPoint, NetOutgoingMessage>>(2);
 			m_connections = new List<NetConnection>();
 			m_connectionLookup = new Dictionary<NetEndPoint, NetConnection>();
-			m_handshakes = new Dictionary<NetEndPoint, NetConnection>();
 			m_senderRemote = (EndPoint)new NetEndPoint(IPAddress.Any, 0);
 			m_status = NetPeerStatus.NotRunning;
 			m_receivedFragmentGroups = new Dictionary<NetConnection, Dictionary<int, ReceivedFragmentGroup>>();	
@@ -306,7 +306,7 @@ namespace Lidgren.Network
 				throw new NetException("Already connected to that endpoint!");
 
 			NetConnection hs;
-			if (m_handshakes.TryGetValue(remoteEndPoint, out hs))
+			if (_handshakeManager.Handshakes.TryGetValue(remoteEndPoint, out hs))
 			{
 				// already trying to connect to that endpoint; make another try
 				switch (hs.m_status)
@@ -335,7 +335,7 @@ namespace Lidgren.Network
 			conn.m_connectRequested = true;
 			conn.m_connectionInitiator = true;
 
-			m_handshakes.Add(remoteEndPoint, conn);
+			_handshakeManager.AddHandshake(remoteEndPoint, conn);
 
 			return conn;
 		}

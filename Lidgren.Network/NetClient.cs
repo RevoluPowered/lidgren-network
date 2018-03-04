@@ -94,14 +94,11 @@ namespace Lidgren.Network
 					return null;
 				}
 			}
-
-			lock (m_handshakes)
+            
+			if (_handshakeManager.Handshakes.Count > 0)
 			{
-				if (m_handshakes.Count > 0)
-				{
-					LogWarning("Connect attempt failed; Handshake already in progress");
-					return null;
-				}
+				LogWarning("Connect attempt failed; Handshake already in progress");
+				return null;
 			}
 
 			return base.Connect(remoteEndPoint, hailMessage);
@@ -116,16 +113,17 @@ namespace Lidgren.Network
 			NetConnection serverConnection = ServerConnection;
 			if (serverConnection == null)
 			{
-				lock (m_handshakes)
+				if (_handshakeManager.Handshakes.Count > 0)
 				{
-					if (m_handshakes.Count > 0)
-					{
-						LogVerbose("Aborting connection attempt");
-						foreach(var hs in m_handshakes)
-							hs.Value.Disconnect(byeMessage);
-						return;
-					}
+					LogVerbose("Aborting connection attempt");
+				    foreach (var hs in _handshakeManager.Handshakes)
+				    {
+				        hs.Value.Disconnect(byeMessage);
+				    }
+
+				    return;
 				}
+				
 
 				LogWarning("Disconnect requested when not connected!");
 				return;

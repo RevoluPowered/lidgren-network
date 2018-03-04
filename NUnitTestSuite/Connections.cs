@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Net;
 using System.Threading;
+using System.Threading.Tasks;
 using NUnit.Framework;
 using Lidgren.Network;
 
@@ -88,8 +89,11 @@ namespace NUnitTestSuite
             return false;
         }
 
-        public void ServerThread()
+        private bool executeServer = false;
+        public async void ServerThread()
         {
+            if (executeServer) return;
+            executeServer = true;
             var server = StartServer();
             var running = true;
             try
@@ -98,6 +102,7 @@ namespace NUnitTestSuite
                 while (running)
                 {
                     NetIncomingMessage message;
+                    await Task.Delay(1); // wait and exit tempoarily so other threads can do work
 
                     while ((message = server.ReadMessage()) != null)
                     {
@@ -124,7 +129,7 @@ namespace NUnitTestSuite
             {
                 TestContext.Out.WriteLine("Stopping server");
                 StopServer(server);
-
+                executeServer = false;
             }
         }
         
@@ -132,20 +137,19 @@ namespace NUnitTestSuite
 
 
 
-        [Test]
+        [Test, Repeat(5)]
         public void NetworkConnectDisconnect()
         {
             InitTestContext();
             TestContext.Out.WriteLine("-----------------------------------------------------------");
             NetPeerManager.StartNetworkThread();
-            Thread serverThread = new Thread(ServerThread);
             
-            serverThread.Start();
+            var task = Task.Run(() => ServerThread());
 
-            var clients = new List<TestClient>(1000);
+            var clients = new List<TestClient>(64);
 
             // pool 20 clients
-            for (var x = 0; x < 1000; x++)
+            for (var x = 0; x < 16; x++)
             {
                 clients.Add( new TestClient());
             }
@@ -155,7 +159,7 @@ namespace NUnitTestSuite
                 client.DoConnectTest();
             }
 
-            serverThread.Join();
+            task.Wait();
             NetPeerManager.WaitForExit();
         }
     }

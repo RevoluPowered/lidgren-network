@@ -174,10 +174,68 @@ namespace Lidgren.Network
             }
         }
     }
-    
+
+    public class ConnectionHandshakeManager
+    {
+        public ConcurrentDictionary<NetEndPoint, NetConnection> Handshakes = new ConcurrentDictionary<IPEndPoint, NetConnection>();
+
+        public void AddHandshake(NetEndPoint endPoint, NetConnection connection)
+        {
+            if (!Handshakes.TryAdd(endPoint, connection))
+            {
+                Task.Run(() => AddHandshakeTask(endPoint, connection));
+            }
+        }
+
+        public void RemoveHandshake(NetEndPoint endPoint)
+        {
+            if (!Handshakes.TryRemove(endPoint, out _))
+            {
+                Task.Run(() => RemoveHandshakeTask(endPoint));
+            }
+        }
+
+        /// <summary>
+        /// Add peer task, will add when succedes
+        /// </summary>
+        /// <param name="peer"></param>
+        private async Task AddHandshakeTask(NetEndPoint endPoint, NetConnection connection)
+        {
+            // return immediately
+            if (Handshakes == null) return;
+
+            // wait for add to work
+            while (!Handshakes.TryAdd(endPoint, connection))
+            {
+                await Task.Delay(1);
+
+                // wait until add succedes
+            }
+        }
+
+        /// <summary>
+        /// Add peer task, will add when succedes
+        /// </summary>
+        /// <param name="peer"></param>
+        private async Task RemoveHandshakeTask(NetEndPoint endPoint)
+        {
+            // return immediately
+            if (Handshakes == null) return;
+
+            // wait for add to work
+            while (!Handshakes.TryRemove(endPoint, out _))
+            {
+                await Task.Delay(1);
+                if (!Handshakes.ContainsKey(endPoint)) return;
+                // wait until add succedes
+            }
+        }
+    }
+
     public partial class NetPeer
     {
         private NetPeerStatus m_status = NetPeerStatus.NotRunning;
+        public ConnectionHandshakeManager _handshakeManager = new ConnectionHandshakeManager();
         private Socket m_socket = null;
         internal byte[] m_sendBuffer;
         internal byte[] m_receiveBuffer;
@@ -194,7 +252,6 @@ namespace Lidgren.Network
         private readonly NetQueue<NetIncomingMessage> m_releasedIncomingMessages;
         internal readonly NetQueue<NetTuple<NetEndPoint, NetOutgoingMessage>> m_unsentUnconnectedMessages;
 
-        internal Dictionary<NetEndPoint, NetConnection> m_handshakes;
 
         internal readonly NetPeerStatistics m_statistics;
         internal long m_uniqueIdentifier;
@@ -345,7 +402,8 @@ namespace Lidgren.Network
 
                 m_releasedIncomingMessages.Clear();
                 m_unsentUnconnectedMessages.Clear();
-                m_handshakes.Clear();
+
+                _handshakeManager.Handshakes.Clear();
 
                 // bind to socket
                 BindSocket();
@@ -372,20 +430,18 @@ namespace Lidgren.Network
         {
             Console.WriteLine("Network shutdown enter");
             // disconnect and make one final heartbeat
-            var list = new List<NetConnection>(m_handshakes.Count + m_connections.Count);
+            var list = new List<NetConnection>(_handshakeManager.Handshakes.Count + m_connections.Count);
             lock (m_connections)
             {
                 foreach (var conn in m_connections)
                     if (conn != null)
                         list.Add(conn);
             }
-
-            lock (m_handshakes)
-            {
-                foreach (var hs in m_handshakes.Values)
-                    if (hs != null && list.Contains(hs) == false)
-                        list.Add(hs);
-            }
+            
+            foreach (var hs in _handshakeManager.Handshakes.Values)
+                if (hs != null && list.Contains(hs) == false)
+                    list.Add(hs);
+            
 
             // shut down connections
             foreach (NetConnection conn in list)
@@ -428,7 +484,8 @@ namespace Lidgren.Network
                     m_unsentUnconnectedMessages?.Clear();
                     m_connections?.Clear();
                     m_connectionLookup?.Clear();
-                    m_handshakes?.Clear();
+                    _handshakeManager.Handshakes?.Clear();
+                    _handshakeManager = null;
 
                     m_status = NetPeerStatus.NotRunning;
                     LogDebug("Shutdown complete");
@@ -466,7 +523,7 @@ namespace Lidgren.Network
             // do handshake heartbeats
             if ((m_frameCounter % 3) == 0)
             {
-                foreach (var kvp in m_handshakes)
+                foreach (var kvp in _handshakeManager.Handshakes)
                 {
                     NetConnection conn = kvp.Value as NetConnection;
                     /*#if DEBUG
@@ -783,7 +840,7 @@ namespace Lidgren.Network
             int ptr, int payloadByteLength)
         {
             NetConnection shake;
-            if (m_handshakes.TryGetValue(senderEndPoint, out shake))
+            if (_handshakeManager.Handshakes.TryGetValue(senderEndPoint, out shake))
             {
                 shake.ReceivedHandshake(now, tp, ptr, payloadByteLength);
                 return;
@@ -817,36 +874,33 @@ namespace Lidgren.Network
                         HandleNatPunchConfirmed(ptr, senderEndPoint);
                     return;
                 case NetMessageType.ConnectResponse:
-
-                    lock (m_handshakes)
+                    
+                    foreach (var hs in _handshakeManager.Handshakes)
                     {
-                        foreach (var hs in m_handshakes)
+                        if (hs.Key.Address.Equals(senderEndPoint.Address))
                         {
-                            if (hs.Key.Address.Equals(senderEndPoint.Address))
+                            if (hs.Value.m_connectionInitiator)
                             {
-                                if (hs.Value.m_connectionInitiator)
-                                {
-                                    //
-                                    // We are currently trying to connection to XX.XX.XX.XX:Y
-                                    // ... but we just received a ConnectResponse from XX.XX.XX.XX:Z
-                                    // Lets just assume the router decided to use this port instead
-                                    //
-                                    var hsconn = hs.Value;
-                                    m_connectionLookup.Remove(hs.Key);
-                                    m_handshakes.Remove(hs.Key);
+                                //
+                                // We are currently trying to connection to XX.XX.XX.XX:Y
+                                // ... but we just received a ConnectResponse from XX.XX.XX.XX:Z
+                                // Lets just assume the router decided to use this port instead
+                                //
+                                var hsconn = hs.Value;
+                                m_connectionLookup.Remove(hs.Key);
+                                _handshakeManager.RemoveHandshake(hs.Key);
+                                LogDebug("Detected host port change; rerouting connection to " +
+                                            senderEndPoint);
+                                hsconn.MutateEndPoint(senderEndPoint);
 
-                                    LogDebug("Detected host port change; rerouting connection to " +
-                                             senderEndPoint);
-                                    hsconn.MutateEndPoint(senderEndPoint);
+                                m_connectionLookup.Add(senderEndPoint, hsconn);
+                                _handshakeManager.AddHandshake(senderEndPoint, hsconn);
 
-                                    m_connectionLookup.Add(senderEndPoint, hsconn);
-                                    m_handshakes.Add(senderEndPoint, hsconn);
-
-                                    hsconn.ReceivedHandshake(now, tp, ptr, payloadByteLength);
-                                    return;
-                                }
+                                hsconn.ReceivedHandshake(now, tp, ptr, payloadByteLength);
+                                return;
                             }
                         }
+                        
                     }
 
                     LogWarning("Received unhandled library message " + tp + " from " + senderEndPoint);
@@ -860,7 +914,7 @@ namespace Lidgren.Network
                     // handle connect
                     // It's someone wanting to shake hands with us!
 
-                    int reservedSlots = m_handshakes.Count + m_connections.Count;
+                    int reservedSlots = _handshakeManager.Handshakes.Count + m_connections.Count;
                     if (reservedSlots >= m_configuration.m_maximumConnections)
                     {
                         // server full
@@ -873,7 +927,7 @@ namespace Lidgren.Network
                     // Ok, start handshake!
                     NetConnection conn = new NetConnection(this, senderEndPoint);
                     conn.m_status = NetConnectionStatus.ReceivedInitiation;
-                    m_handshakes.Add(senderEndPoint, conn);
+                    _handshakeManager.Handshakes.TryAdd(senderEndPoint, conn);
                     conn.ReceivedHandshake(now, tp, ptr, payloadByteLength);
                     return;
 
@@ -892,8 +946,7 @@ namespace Lidgren.Network
             // LogDebug("Accepted connection " + conn);
             conn.InitExpandMTU(NetTime.Now);
 
-            if (m_handshakes.Remove(conn.m_remoteEndPoint) == false)
-                LogWarning("AcceptConnection called but m_handshakes did not contain it!");
+            _handshakeManager.RemoveHandshake(conn.m_remoteEndPoint);
 
             lock (m_connections)
             {
