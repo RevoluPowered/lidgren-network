@@ -137,7 +137,7 @@ namespace NUnitTestSuite
 
 
 
-        [Test, Repeat(5)]
+        [Test]
         public void NetworkConnectDisconnect()
         {
             InitTestContext();
@@ -146,10 +146,10 @@ namespace NUnitTestSuite
             
             var task = Task.Run(() => ServerThread());
 
-            var clients = new List<TestClient>(64);
+            var clients = new List<TestClient>(1000);
 
             // pool 20 clients
-            for (var x = 0; x < 16; x++)
+            for (var x = 0; x < 1000; x++)
             {
                 clients.Add( new TestClient());
             }
