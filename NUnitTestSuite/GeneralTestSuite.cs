@@ -19,7 +19,7 @@ namespace NUnitTestSuite
             Connections.InitTestContext();
         }
 
-        [Test, MaxTime(30000), Repeat(5)]
+        [Test, Repeat(5)]
         public void GenericTestSuite()
         {
             NetPeerManager.StartNetworkThread();
