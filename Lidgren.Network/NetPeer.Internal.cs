@@ -481,11 +481,20 @@ namespace Lidgren.Network
                 {
                     if (m_socket != null)
                     {
-                        // shutdown socket send and recieve handlers.
-                        //m_socket.Shutdown(SocketShutdown.Both);
-
-                        // close connection, if present
-                        m_socket.Close(2);
+                        try
+                        {
+                            // shutdown socket send and recieve handlers.
+                            m_socket.Shutdown(SocketShutdown.Both);
+                        }
+                        catch (Exception e)
+                        {
+                            Console.WriteLine(e);
+                        }
+                        finally
+                        {
+                            // close connection, if present
+                            m_socket.Close(2);
+                        }
                     }
                 }
                 catch (Exception ex)
