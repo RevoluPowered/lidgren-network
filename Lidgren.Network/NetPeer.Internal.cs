@@ -25,11 +25,18 @@ namespace Lidgren.Network
         public static Thread NetworkUpdateThread = null;
         public static Object InitThreadLock = new Object();
 
+        /// <summary>
+        /// Wait for network thread exit
+        /// </summary>
         public static void WaitForExit()
         {
             NetworkUpdateThread?.Join();
         }
-
+        
+        /// <summary>
+        /// Concurrent add peer task
+        /// </summary>
+        /// <param name="peer"></param>
         public static void AddPeer(NetPeer peer)
         {
             if (!Peers.TryAdd(peer, peer.Socket))
@@ -37,7 +44,11 @@ namespace Lidgren.Network
                 Task.Run(() => AddPeerTask(peer));
             }
         }
-
+        
+        /// <summary>
+        /// Concurrent remove peer task
+        /// </summary>
+        /// <param name="peer"></param>
         public static void RemovePeer(NetPeer peer)
         {
             if (Peers.TryRemove(peer, out _))
@@ -328,7 +339,11 @@ namespace Lidgren.Network
             }
         }
 
-        private void BindSocket()
+        /// <summary>
+        /// Bind socket - with rebind parameter for when you need to rebind a socket
+        /// </summary>
+        /// <param name="rebind"></param>
+        private void BindSocket( bool rebind)
         {
             double now = NetTime.Now;
             if (now - m_lastSocketBind < 1.0)
@@ -344,6 +359,12 @@ namespace Lidgren.Network
                 m_socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
             }
             
+            // todo: write unit test which executes rebinding of the sockets on android and ios
+            if (rebind)
+            {
+                m_socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, (int)1);
+            }
+            
             // Register this peer to our manager
             NetPeerManager.AddPeer(this);
 
@@ -353,7 +374,7 @@ namespace Lidgren.Network
             m_socket.SendBufferSize = m_configuration.SendBufferSize;
             m_socket.Blocking = false;
 
-            var ep = (EndPoint) new NetEndPoint(m_configuration.LocalAddress, m_configuration.Port);
+            var ep = (EndPoint) new NetEndPoint(m_configuration.LocalAddress, rebind ? m_listenPort : m_configuration.Port);
             m_socket.Bind(ep);
 
             // try catch only works on linux not osx
@@ -406,7 +427,7 @@ namespace Lidgren.Network
                 _handshakeManager.Handshakes.Clear();
 
                 // bind to socket
-                BindSocket();
+                BindSocket(false);
 
                 m_receiveBuffer = new byte[m_configuration.ReceiveBufferSize];
                 m_sendBuffer = new byte[m_configuration.SendBufferSize];
@@ -646,7 +667,7 @@ namespace Lidgren.Network
 
                         case SocketError.NotConnected:
                             // socket is unbound; try to rebind it (happens on mobile when process goes to sleep)
-                            BindSocket();
+                            BindSocket(true);
                             return;
 
                         default:
