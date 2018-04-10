@@ -32,7 +32,6 @@ namespace NUnitTestSuite
 
         public void StopClient()
         {
-
             NetClient.Shutdown("closing client connection");
         }
 
