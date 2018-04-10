@@ -182,7 +182,10 @@ namespace Lidgren.Network
             lock (m_initializeLock)
             {
                 // make sure this is properly set up again, if required.
-
+                
+                // start network thread if not running
+                NetPeerManager.StartNetworkThread();
+                
                 m_configuration.Lock();
 
                 if (m_status == NetPeerStatus.Running)

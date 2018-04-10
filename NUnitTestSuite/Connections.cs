@@ -39,7 +39,6 @@ namespace NUnitTestSuite
         [Test, Repeat(5)]
         public void NetworkServerInitTest()
         {
-            NetPeerManager.StartNetworkThread();
             var server = StartServer();
 
             Assert.That(() => server.Status, Is.EqualTo(NetPeerStatus.Running).After(4).Seconds.PollEvery(100));
@@ -56,7 +55,6 @@ namespace NUnitTestSuite
         [Test, Repeat(5)]
         public void NetworkClientInitTest()
         {
-            NetPeerManager.StartNetworkThread();
             InitTestContext();
             var client = new TestClient();
             
@@ -142,8 +140,7 @@ namespace NUnitTestSuite
         {
             InitTestContext();
             TestContext.Out.WriteLine("-----------------------------------------------------------");
-            NetPeerManager.StartNetworkThread();
-            
+
             var task = Task.Run(() => ServerThread());
 
             var clients = new List<TestClient>(1000);
