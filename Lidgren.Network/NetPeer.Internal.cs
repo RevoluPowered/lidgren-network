@@ -263,7 +263,7 @@ namespace Lidgren.Network
                         }
                         catch (Exception e)
                         {
-                            Console.WriteLine(e);
+                            LogDebug(e.ToString());
                         }
                         finally
                         {
