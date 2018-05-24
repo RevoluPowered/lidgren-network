@@ -18,9 +18,8 @@ Platforms/Toolchains which need testing:
 Tested in:
 - Mono (alpha and beta)
 - .NET 4.6
-- Unity 2017.1 -> 2018.1.
+- Unity 2017.1 -> 2018.x
 
 Future Roadmap:
-- Update to latest .NET 4.6
 - Investigate officially supporting .NET Core.
 - Improve test suite so that tests are run on all platforms we support, for each release.
