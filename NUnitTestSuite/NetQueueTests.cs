@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using Lidgren.Network;
+using NUnit.Framework;
 
 namespace UnitTests
 {
@@ -79,7 +80,7 @@ namespace UnitTests
 			if (arr2.Length != 0)
 				throw new Exception("NetQueue.ToArray failure");
 
-			Console.WriteLine("NetQueue tests OK");
+		    TestContext.Out.WriteLine("NetQueue tests OK");
 		}
 	}
 }

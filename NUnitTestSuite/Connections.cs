@@ -1,27 +1,31 @@
-﻿
+﻿using System;
+using System.Collections.Generic;
 using System.Net;
+using System.Threading;
+using System.Threading.Tasks;
 using NUnit.Framework;
-using Lidgren;
 using Lidgren.Network;
-using NUnit.Framework.Constraints;
 
 namespace NUnitTestSuite
 {
     [TestFixture]
     public class Connections
     {
+        public static void InitTestContext()
+        {
+            // console app sync context
+            SynchronizationContext.SetSynchronizationContext(new SynchronizationContext());
+        }
+
         public NetServer StartServer()
         {
-            var config = new NetPeerConfiguration("test-suite")
+            var config = new NetPeerConfiguration("tests")
             {
-                EnableUPnP = true,
-                Port = 27015
+                Port = 27015,
+                MaximumConnections = 1024
             };
 
-            // enable nat 
-            config.EnableMessageType(NetIncomingMessageType.NatIntroductionSuccess);
-
-            NetServer server = new NetServer(config);
+            var server = new NetServer(config);
             server.Start();
 
             return server;
@@ -32,30 +36,128 @@ namespace NUnitTestSuite
             server.Shutdown("closing server");
         }
 
-        [Test, Repeat(100)]
-        public void NetworkServerTest()
+        [Test, Repeat(5)]
+        public void NetworkServerInitTest()
         {
             var server = StartServer();
-            StopServer(server);
 
-            Assert.AreEqual(NetPeerStatus.ShutdownRequested, server.Status);
+            Assert.That(() => server.Status, Is.EqualTo(NetPeerStatus.Running).After(4).Seconds.PollEvery(100));
+
+            StopServer(server);
+            
             Assert.That(() => server.Status, Is.EqualTo(NetPeerStatus.NotRunning).After(4).Seconds.PollEvery(100));
+            NetPeerManager.WaitForExit();
         }
 
-        [Test, Repeat(100)]
+
+
+
+        [Test, Repeat(5)]
         public void NetworkClientInitTest()
         {
-            var config = new NetPeerConfiguration("test-suite")
+            InitTestContext();
+            var client = new TestClient();
+            
+            Assert.That(() => client.NetClient.Status, Is.EqualTo(NetPeerStatus.Running).After(4).Seconds.PollEvery(50));
+
+            client.StopClient();
+
+            Assert.That(() => client.NetClient.Status, Is.EqualTo(NetPeerStatus.NotRunning).After(4).Seconds.PollEvery(50));
+            NetPeerManager.WaitForExit();
+        }
+
+        public bool ConnectionStatusHandler( string context, NetIncomingMessage message )
+        {
+            switch (message.MessageType)
             {
-                EnableUPnP = true,
-                Port = 27015
-            };
+                case NetIncomingMessageType.StatusChanged:
+                    NetConnectionStatus status = (NetConnectionStatus) message.ReadByte();
+                    TestContext.Out.WriteLine("[" + context + "] Connection status changed: " + status);
+                    if (status == NetConnectionStatus.Disconnected)
+                    {
+                        return true;
+                    }
+                
+                    break;
+                default:
+                    TestContext.Out.WriteLine("[" + context + "] data: " + message.ReadString());
+                    break;
+            }
 
-            config.EnableMessageType(NetIncomingMessageType.NatIntroductionSuccess);
+            return false;
+        }
 
-            var client = new NetClient(config);
-            client.Start();
-            client.Shutdown("closing client connection");
+        private bool executeServer = false;
+        public async void ServerThread()
+        {
+            if (executeServer) return;
+            executeServer = true;
+            var server = StartServer();
+            var running = true;
+            try
+            {
+                // enter context for handling messages
+                while (running)
+                {
+                    NetIncomingMessage message;
+                    await Task.Delay(1); // wait and exit tempoarily so other threads can do work
+
+                    while ((message = server.ReadMessage()) != null)
+                    {
+                        var status = ConnectionStatusHandler("server", message);
+                        if (status)
+                        {
+                            TestContext.Out.WriteLine("Client has disconnected from the server");
+
+                            running = false;
+                            break;
+                        }
+
+                        server.Recycle(message);
+                    }
+
+                }
+            }
+            catch (Exception e)
+            {
+                TestContext.Out.WriteLine(e.ToString());
+                throw;
+            }
+            finally
+            {
+                TestContext.Out.WriteLine("Stopping server");
+                StopServer(server);
+                executeServer = false;
+            }
+        }
+        
+
+
+
+
+        [Test]
+        public void NetworkConnectDisconnect()
+        {
+            InitTestContext();
+            TestContext.Out.WriteLine("-----------------------------------------------------------");
+
+            var task = Task.Run(() => ServerThread());
+
+            var clients = new List<TestClient>(1000);
+
+            // pool 20 clients
+            for (var x = 0; x < 1000; x++)
+            {
+                clients.Add( new TestClient());
+            }
+            
+            foreach (var client in clients)
+            {
+                client.DoConnectTest();
+            }
+
+            task.Wait();
+            NetPeerManager.WaitForExit();
         }
     }
 }

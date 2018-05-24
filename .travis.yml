@@ -1,7 +1,11 @@
 language: csharp
 solution: Lidgren.Network.sln
+os:
+  - linux
+  - osx
 install:
   - nuget restore Lidgren.Network.sln
 script:
   - xbuild /p:Configuration=Release Lidgren.Network.sln
-  - mono ./UnitTests/bin/Release/UnitTests.exe
+  - xbuild /p:Configuration=Debug Lidgren.Network.sln
+  - mono ./packages/NUnit.ConsoleRunner.3.8.0/tools/nunit3-console.exe ./NUnitTestSuite/bin/Debug/NUnitTestSuite.dll

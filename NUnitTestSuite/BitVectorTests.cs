@@ -1,5 +1,6 @@
 ﻿using System;
 using Lidgren.Network;
+using NUnit.Framework;
 
 namespace UnitTests
 {
@@ -33,7 +34,7 @@ namespace UnitTests
 					throw new NetException("bit vector fail 4");
 			}
 
-			/*
+            /*
 			v = new NetBitVector(9);
 			v.Clear();
 			v.Set(3, true);
@@ -64,7 +65,7 @@ namespace UnitTests
 				throw new NetException("NetBitVector.RotateDown failed 5");
 			*/
 
-			Console.WriteLine("NetBitVector tests OK");
+		    TestContext.Out.WriteLine("NetBitVector tests OK");
 		}
 	}
 }

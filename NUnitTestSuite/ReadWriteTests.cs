@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using Lidgren.Network;
 using System.Reflection;
 using System.Text;
+using NUnit.Framework;
 
 namespace UnitTests
 {
@@ -64,7 +65,7 @@ namespace UnitTests
 
 			byte[] data = msg.Data;
 
-			NetIncomingMessage inc = Program.CreateIncomingMessage(data, msg.LengthBits);
+			NetIncomingMessage inc = MiscTests.CreateIncomingMessage(data, msg.LengthBits);
 
 			StringBuilder bdr = new StringBuilder();
 
@@ -74,6 +75,9 @@ namespace UnitTests
 
 			string strResult;
 			bool ok = inc.ReadString(out strResult);
+
+            Assert.IsTrue(ok,"ReadWriteTests failed");
+
 			if (ok == false)
 				throw new NetException("Read/write failure");
 			bdr.Append(strResult);
@@ -103,7 +107,7 @@ namespace UnitTests
 			bdr.Append(inc.ReadVariableInt64());
 
 			if (bdr.ToString().Equals("False-342duke of earl434418446744073709551615True56784521159980224614-4747000048-49"))
-				Console.WriteLine("Read/write tests OK");
+			    TestContext.Out.WriteLine("Read/write tests OK");
 			else
 				throw new NetException("Read/write tests FAILED!");
 
@@ -129,7 +133,7 @@ namespace UnitTests
 
 			data = tmp.Data;
 
-			inc = Program.CreateIncomingMessage(data, tmp.LengthBits);
+			inc = MiscTests.CreateIncomingMessage(data, tmp.LengthBits);
 
 			Test readTest = new Test();
 			inc.ReadAllFields(readTest, BindingFlags.Public | BindingFlags.Instance);
@@ -143,7 +147,7 @@ namespace UnitTests
 			byte[] tmparr = new byte[] { 5, 6, 7, 8, 9 };
 			msg.Write(tmparr);
 
-			inc = Program.CreateIncomingMessage(msg.Data, msg.LengthBits);
+			inc = MiscTests.CreateIncomingMessage(msg.Data, msg.LengthBits);
 			byte[] result = inc.ReadBytes(tmparr.Length);
 
 			for (int i = 0; i < tmparr.Length; i++)

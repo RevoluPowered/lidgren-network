@@ -4,6 +4,7 @@ using System.Text;
 using Lidgren.Network;
 using System.Security;
 using System.Collections.Generic;
+using NUnit.Framework;
 
 namespace UnitTests
 {
@@ -35,7 +36,7 @@ namespace UnitTests
 				om.Encrypt(algo);
 
 				// convert to incoming message
-				NetIncomingMessage im = Program.CreateIncomingMessage(om.PeekDataBuffer(), om.LengthBits);
+				NetIncomingMessage im = MiscTests.CreateIncomingMessage(om.PeekDataBuffer(), om.LengthBits);
 				if (im.Data == null || im.Data.Length == 0)
 					throw new NetException("bad im!");
 
@@ -56,7 +57,7 @@ namespace UnitTests
 				if (im.ReadString() != "kokos")
 					throw new NetException("fail");
 
-				Console.WriteLine(algo.GetType().Name + " encryption verified");
+			    TestContext.Out.WriteLine(algo.GetType().Name + " encryption verified");
 			}
 
 			for (int i = 0; i < 100; i++)
@@ -96,7 +97,7 @@ namespace UnitTests
 				var test = NetSRP.CreateEncryption(peer, Ss);
 			}
 
-			Console.WriteLine("Message encryption OK");
+		    TestContext.Out.WriteLine("Message encryption OK");
 		}
 	}
 }
