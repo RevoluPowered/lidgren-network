@@ -1,4 +1,4 @@
-# Lidgren.Network revised ![](https://api.travis-ci.org/RevoluPowered/lidgren-network.svg?branch=master)
+# Lidgren.Network revised [![Build Status](https://travis-ci.org/RevoluPowered/lidgren-network.svg?branch=master)](https://travis-ci.org/RevoluPowered/lidgren-network)
 
 Includes changes which remove socket poll from being slow, updates API to use socket.Select, this lets you handle 1000+ connections, also it changes the behaviour of the library to use concurrency more and async wherever possible.
 
