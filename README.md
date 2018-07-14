@@ -1,4 +1,9 @@
-# Lidgren.Network revised ![](https://api.travis-ci.org/RevoluPowered/lidgren-network-gen3.svg?branch=master)
+# Lidgren.Network revised ![](https://api.travis-ci.org/RevoluPowered/lidgren-network.svg?branch=master)
+
+Includes changes which remove socket poll from being slow, updates API to use socket.Select, this lets you handle 1000+ connections, also it changes the behaviour of the library to use concurrency more and async wherever possible.
+
+The changes are alpha / not production ready, so use them at your own risk for now.
+
 Lidgren.Network is a networking library for .NET framework, which uses a single UDP socket to deliver a simple API for connecting a client to a server, reading and sending messages.
 
 This has been updated for use with Unity3D, feel free to send PRs for other bugs fixes.
